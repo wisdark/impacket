@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# Copyright (c) 2003-2016 CORE Security Technologies
+# SECUREAUTH LABS. Copyright 2018 SecureAuth Corporation. All rights reserved.
 #
 # This software is provided under under a slightly modified version
 # of the Apache Software License. See the accompanying LICENSE file
@@ -22,6 +22,7 @@ import argparse
 import random
 import string
 import time
+from six import PY3
 
 from impacket.examples import logger
 from impacket import version, smb
@@ -55,7 +56,7 @@ lock = Lock()
 
 class PSEXEC:
     def __init__(self, command, path, exeFile, copyFile, port=445,
-                 username='', password='', domain='', hashes=None, aesKey=None, doKerberos=False, kdcHost=None):
+                 username='', password='', domain='', hashes=None, aesKey=None, doKerberos=False, kdcHost=None, serviceName=None):
         self.__username = username
         self.__password = password
         self.__port = port
@@ -69,12 +70,13 @@ class PSEXEC:
         self.__copyFile = copyFile
         self.__doKerberos = doKerberos
         self.__kdcHost = kdcHost
+        self.__serviceName = serviceName
         if hashes is not None:
             self.__lmhash, self.__nthash = hashes.split(':')
 
     def run(self, remoteName, remoteHost):
 
-        stringbinding = 'ncacn_np:%s[\pipe\svcctl]' % remoteName
+        stringbinding = r'ncacn_np:%s[\pipe\svcctl]' % remoteName
         logging.debug('StringBinding %s'%stringbinding)
         rpctransport = transport.DCERPCTransportFactory(stringbinding)
         rpctransport.set_dport(self.__port)
@@ -101,8 +103,7 @@ class PSEXEC:
                 pass
 
         if tries == 0:
-            logging.critical('Pipe not ready, aborting')
-            raise
+            raise Exception('Pipe not ready, aborting')
 
         fid = s.openFile(tid,pipe,accessMask, creationOption = 0x40, fileAttributes = 0x80)
 
@@ -113,9 +114,10 @@ class PSEXEC:
         dce = rpctransport.get_dce_rpc()
         try:
             dce.connect()
-        except Exception, e:
-            #import traceback
-            #traceback.print_exc()
+        except Exception as e:
+            if logging.getLogger().level == logging.DEBUG:
+                import traceback
+                traceback.print_exc()
             logging.critical(str(e))
             sys.exit(1)
 
@@ -129,11 +131,11 @@ class PSEXEC:
             # We don't wanna deal with timeouts from now on.
             s.setTimeout(100000)
             if self.__exeFile is None:
-                installService = serviceinstall.ServiceInstall(rpctransport.get_smb_connection(), remcomsvc.RemComSvc())
+                installService = serviceinstall.ServiceInstall(rpctransport.get_smb_connection(), remcomsvc.RemComSvc(), self.__serviceName)
             else:
                 try:
                     f = open(self.__exeFile)
-                except Exception, e:
+                except Exception as e:
                     logging.critical(str(e))
                     sys.exit(1)
                 installService = serviceinstall.ServiceInstall(rpctransport.get_smb_connection(), f)
@@ -151,18 +153,18 @@ class PSEXEC:
                 self.__command = os.path.basename(self.__copyFile) + ' ' + self.__command
 
             tid = s.connectTree('IPC$')
-            fid_main = self.openPipe(s,tid,'\RemCom_communicaton',0x12019f)
+            fid_main = self.openPipe(s,tid,r'\RemCom_communicaton',0x12019f)
 
             packet = RemComMessage()
             pid = os.getpid()
 
-            packet['Machine'] = ''.join([random.choice(string.letters) for _ in range(4)])
+            packet['Machine'] = ''.join([random.choice(string.ascii_letters) for _ in range(4)])
             if self.__path is not None:
                 packet['WorkingDir'] = self.__path
             packet['Command'] = self.__command
             packet['ProcessID'] = pid
 
-            s.writeNamedPipe(tid, fid_main, str(packet))
+            s.writeNamedPipe(tid, fid_main, packet.getData())
 
             # Here we'll store the command we type so we don't print it back ;)
             # ( I know.. globals are nasty :P )
@@ -171,15 +173,15 @@ class PSEXEC:
 
             # Create the pipes threads
             stdin_pipe = RemoteStdInPipe(rpctransport,
-                                         '\%s%s%d' % (RemComSTDIN, packet['Machine'], packet['ProcessID']),
+                                         r'\%s%s%d' % (RemComSTDIN, packet['Machine'], packet['ProcessID']),
                                          smb.FILE_WRITE_DATA | smb.FILE_APPEND_DATA, installService.getShare())
             stdin_pipe.start()
             stdout_pipe = RemoteStdOutPipe(rpctransport,
-                                           '\%s%s%d' % (RemComSTDOUT, packet['Machine'], packet['ProcessID']),
+                                           r'\%s%s%d' % (RemComSTDOUT, packet['Machine'], packet['ProcessID']),
                                            smb.FILE_READ_DATA)
             stdout_pipe.start()
             stderr_pipe = RemoteStdErrPipe(rpctransport,
-                                           '\%s%s%d' % (RemComSTDERR, packet['Machine'], packet['ProcessID']),
+                                           r'\%s%s%d' % (RemComSTDERR, packet['Machine'], packet['ProcessID']),
                                            smb.FILE_READ_DATA)
             stderr_pipe.start()
             
@@ -199,9 +201,11 @@ class PSEXEC:
 
         except SystemExit:
             raise
-        except:
-            #import traceback
-            #traceback.print_exc()
+        except Exception as e:
+            if logging.getLogger().level == logging.DEBUG:
+                import traceback
+                traceback.print_exc()
+            logging.debug(str(e))
             if unInstalled is False:
                 installService.uninstall()
                 if self.__copyFile is not None:
@@ -242,8 +246,9 @@ class Pipes(Thread):
             self.fid = self.server.openFile(self.tid,self.pipe,self.permissions, creationOption = 0x40, fileAttributes = 0x80)
             self.server.setTimeout(1000000)
         except:
-            import traceback
-            traceback.print_exc()
+            if logging.getLogger().level == logging.DEBUG:
+                import traceback
+                traceback.print_exc()
             logging.error("Something wen't wrong connecting the pipes(%s), try again" % self.__class__)
 
 
@@ -318,13 +323,13 @@ class RemoteShell(cmd.Cmd):
             self.transferClient.login(user, passwd, domain, lm, nt)
 
     def do_help(self, line):
-        print """
+        print("""
  lcd {path}                 - changes the current local directory to {path}
  exit                       - terminates the server process (and this session)
  put {src_file, dst_path}   - uploads a local file to the dst_path RELATIVE to the connected share (%s)
  get {file}                 - downloads pathname RELATIVE to the connected share (%s) to the current local dir 
  ! {cmd}                    - executes a local shell cmd
-""" % (self.share, self.share)
+""" % (self.share, self.share))
         self.send_data('\r\n', False)
 
     def do_shell(self, s):
@@ -339,10 +344,10 @@ class RemoteShell(cmd.Cmd):
             import ntpath
             filename = ntpath.basename(src_path)
             fh = open(filename,'wb')
-            logging.info("Downloading %s\%s" % (self.share, src_path))
+            logging.info("Downloading %s\\%s" % (self.share, src_path))
             self.transferClient.getFile(self.share, src_path, fh.write)
             fh.close()
-        except Exception, e:
+        except Exception as e:
             logging.critical(str(e))
             pass
 
@@ -363,11 +368,14 @@ class RemoteShell(cmd.Cmd):
             src_file = os.path.basename(src_path)
             fh = open(src_path, 'rb')
             f = dst_path + '/' + src_file
-            pathname = string.replace(f,'/','\\')
-            logging.info("Uploading %s to %s\%s" % (src_file, self.share, dst_path))
-            self.transferClient.putFile(self.share, pathname.decode(sys.stdin.encoding), fh.read)
+            pathname = f.replace('/','\\')
+            logging.info("Uploading %s to %s\\%s" % (src_file, self.share, dst_path))
+            if PY3:
+                self.transferClient.putFile(self.share, pathname, fh.read)
+            else:
+                self.transferClient.putFile(self.share, pathname.decode(sys.stdin.encoding), fh.read)
             fh.close()
-        except Exception, e:
+        except Exception as e:
             logging.error(str(e))
             pass
 
@@ -375,7 +383,7 @@ class RemoteShell(cmd.Cmd):
 
     def do_lcd(self, s):
         if s == '':
-            print os.getcwd()
+            print(os.getcwd())
         else:
             os.chdir(s)
         self.send_data('\r\n')
@@ -385,7 +393,10 @@ class RemoteShell(cmd.Cmd):
         return
 
     def default(self, line):
-        self.send_data(line.decode(sys.stdin.encoding).encode('cp437')+'\r\n')
+        if PY3:
+            self.send_data(line.encode('cp437')+b'\r\n')
+        else:
+            self.send_data(line.decode(sys.stdin.encoding).encode('cp437')+'\r\n')
 
     def send_data(self, data, hideOutput = True):
         if hideOutput is True:
@@ -409,7 +420,7 @@ class RemoteStdInPipe(Pipes):
 if __name__ == '__main__':
     # Init the example's logger theme
     logger.init()
-    print version.BANNER
+    print(version.BANNER)
 
     parser = argparse.ArgumentParser(add_help = True, description = "PSEXEC like functionality example using RemComSvc.")
 
@@ -435,13 +446,14 @@ if __name__ == '__main__':
     group = parser.add_argument_group('connection')
 
     group.add_argument('-dc-ip', action='store', metavar="ip address",
-                       help='IP Address of the domain controller. If ommited it use the domain part (FQDN) specified in '
+                       help='IP Address of the domain controller. If omitted it will use the domain part (FQDN) specified in '
                             'the target parameter')
     group.add_argument('-target-ip', action='store', metavar="ip address",
-                       help='IP Address of the target machine. If ommited it will use whatever was specified as target. '
+                       help='IP Address of the target machine. If omitted it will use whatever was specified as target. '
                             'This is useful when target is the NetBIOS name and you cannot resolve it')
     group.add_argument('-port', choices=['139', '445'], nargs='?', default='445', metavar="destination port",
                        help='Destination port to connect to SMB Server')
+    group.add_argument('-service-name', action='store', metavar="service name", default = '', help='This will be the name of the service')
 
     if len(sys.argv)==1:
         parser.print_help()
@@ -482,5 +494,5 @@ if __name__ == '__main__':
         command = 'cmd.exe'
 
     executer = PSEXEC(command, options.path, options.file, options.c, int(options.port), username, password, domain, options.hashes,
-                      options.aesKey, options.k, options.dc_ip)
+                      options.aesKey, options.k, options.dc_ip, options.service_name)
     executer.run(remoteName, options.target_ip)

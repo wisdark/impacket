@@ -1,12 +1,12 @@
 #!/usr/bin/env python
-# Copyright (c) 2003-2016 CORE Security Technologies
+# SECUREAUTH LABS. Copyright 2018 SecureAuth Corporation. All rights reserved.
 #
 # This software is provided under under a slightly modified version
 # of the Apache Software License. See the accompanying LICENSE file
 # for more information.
 #
 # A similar approach to psexec w/o using RemComSvc. The technique is described here
-# http://www.accuvant.com/blog/owning-computers-without-shell-access
+# https://www.optiv.com/blog/owning-computers-without-shell-access
 # Our implementation goes one step further, instantiating a local smbserver to receive the 
 # output of the commands. This is useful in the situation where the target machine does NOT
 # have a writeable share available.
@@ -27,18 +27,22 @@
 #
 # Reference for:
 #  DCE/RPC and SMB.
-
+from __future__ import division
+from __future__ import print_function
 import sys
 import os
 import cmd
 import argparse
-import ConfigParser
+try:
+    import ConfigParser
+except ImportError:
+    import configparser as ConfigParser
 import logging
 from threading import Thread
 
 from impacket.examples import logger
 from impacket import version, smbserver
-from impacket.smbconnection import *
+from impacket.smbconnection import SMB_DIALECT
 from impacket.dcerpc.v5 import transport, scmr
 
 OUTPUT_FILENAME = '__output'
@@ -55,7 +59,7 @@ class SMBServer(Thread):
         logging.info('Cleaning up..')
         try:
             os.unlink(SMBSERVER_DIR + '/smb.log')
-        except:
+        except OSError:
             pass
         os.rmdir(SMBSERVER_DIR)
 
@@ -87,7 +91,7 @@ class SMBServer(Thread):
         logging.info('Creating tmp directory')
         try:
             os.mkdir(SMBSERVER_DIR)
-        except Exception, e:
+        except Exception as e:
             logging.critical(str(e))
             pass
         logging.info('Setting up SMB Server')
@@ -125,7 +129,7 @@ class CMDEXEC:
             self.__lmhash, self.__nthash = hashes.split(':')
 
     def run(self, remoteName, remoteHost):
-        stringbinding = 'ncacn_np:%s[\pipe\svcctl]' % remoteName
+        stringbinding = r'ncacn_np:%s[\pipe\svcctl]' % remoteName
         logging.debug('StringBinding %s'%stringbinding)
         rpctransport = transport.DCERPCTransportFactory(stringbinding)
         rpctransport.set_dport(self.__port)
@@ -148,9 +152,10 @@ class CMDEXEC:
             self.shell.cmdloop()
             if self.__mode == 'SERVER':
                 serverThread.stop()
-        except  (Exception, KeyboardInterrupt), e:
-            #import traceback
-            #traceback.print_exc()
+        except  (Exception, KeyboardInterrupt) as e:
+            if logging.getLogger().level == logging.DEBUG:
+                import traceback
+                traceback.print_exc()
             logging.critical(str(e))
             if self.shell is not None:
                 self.shell.finish()
@@ -164,7 +169,7 @@ class RemoteShell(cmd.Cmd):
         self.__mode = mode
         self.__output = '\\\\127.0.0.1\\' + self.__share + '\\' + OUTPUT_FILENAME
         self.__batchFile = '%TEMP%\\' + BATCH_FILENAME 
-        self.__outputBuffer = ''
+        self.__outputBuffer = b''
         self.__command = ''
         self.__shell = '%COMSPEC% /Q /c '
         self.__serviceName = serviceName
@@ -174,7 +179,7 @@ class RemoteShell(cmd.Cmd):
         self.__scmr = rpc.get_dce_rpc()
         try:
             self.__scmr.connect()
-        except Exception, e:
+        except Exception as e:
             logging.critical(str(e))
             sys.exit(1)
 
@@ -205,7 +210,7 @@ class RemoteShell(cmd.Cmd):
            scmr.hRDeleteService(self.__scmr, service)
            scmr.hRControlService(self.__scmr, service, scmr.SERVICE_CONTROL_STOP)
            scmr.hRCloseServiceHandle(self.__scmr, service)
-        except:
+        except scmr.DCERPCException:
            pass
 
     def do_shell(self, s):
@@ -218,15 +223,15 @@ class RemoteShell(cmd.Cmd):
         return False
 
     def do_cd(self, s):
-        # We just can't CD or mantain track of the target dir.
+        # We just can't CD or maintain track of the target dir.
         if len(s) > 0:
             logging.error("You can't CD under SMBEXEC. Use full paths.")
 
         self.execute_remote('cd ' )
         if len(self.__outputBuffer) > 0:
             # Stripping CR/LF
-            self.prompt = string.replace(self.__outputBuffer,'\r\n','') + '>'
-            self.__outputBuffer = ''
+            self.prompt = self.__outputBuffer.decode().replace('\r\n','') + '>'
+            self.__outputBuffer = b''
 
     def do_CD(self, s):
         return self.do_cd(s)
@@ -256,7 +261,8 @@ class RemoteShell(cmd.Cmd):
         command += ' & ' + 'del ' + self.__batchFile 
 
         logging.debug('Executing %s' % command)
-        resp = scmr.hRCreateServiceW(self.__scmr, self.__scHandle, self.__serviceName, self.__serviceName, lpBinaryPathName=command)
+        resp = scmr.hRCreateServiceW(self.__scmr, self.__scHandle, self.__serviceName, self.__serviceName,
+                                     lpBinaryPathName=command, dwStartType=scmr.SERVICE_DEMAND_START)
         service = resp['lpServiceHandle']
 
         try:
@@ -269,15 +275,15 @@ class RemoteShell(cmd.Cmd):
 
     def send_data(self, data):
         self.execute_remote(data)
-        print self.__outputBuffer
-        self.__outputBuffer = ''
+        print(self.__outputBuffer.decode())
+        self.__outputBuffer = b''
 
 
 # Process command-line arguments.
 if __name__ == '__main__':
     # Init the example's logger theme
     logger.init()
-    print version.BANNER
+    print(version.BANNER)
 
     parser = argparse.ArgumentParser()
 
@@ -291,7 +297,7 @@ if __name__ == '__main__':
     group = parser.add_argument_group('connection')
 
     group.add_argument('-dc-ip', action='store',metavar = "ip address", help='IP Address of the domain controller. '
-                       'If ommited it use the domain part (FQDN) specified in the target parameter')
+                       'If omitted it will use the domain part (FQDN) specified in the target parameter')
     group.add_argument('-target-ip', action='store', metavar="ip address", help='IP Address of the target machine. If '
                        'ommited it will use whatever was specified as target. This is useful when target is the NetBIOS '
                        'name and you cannot resolve it')
@@ -345,6 +351,9 @@ if __name__ == '__main__':
         executer = CMDEXEC(username, password, domain, options.hashes, options.aesKey, options.k,
                            options.dc_ip, options.mode, options.share, int(options.port))
         executer.run(remoteName, options.target_ip)
-    except Exception, e:
+    except Exception as e:
+        if logging.getLogger().level == logging.DEBUG:
+            import traceback
+            traceback.print_exc()
         logging.critical(str(e))
     sys.exit(0)

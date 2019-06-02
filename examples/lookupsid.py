@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# Copyright (c) 2012-2016 CORE Security Technologies
+# SECUREAUTH LABS. Copyright 2018 SecureAuth Corporation. All rights reserved.
 #
 # This software is provided under under a slightly modified version
 # of the Apache Software License. See the accompanying LICENSE file
@@ -12,7 +12,8 @@
 #
 # Reference for:
 #  DCE/RPC [MS-LSAT]
-
+from __future__ import division
+from __future__ import print_function
 import sys
 import logging
 import argparse
@@ -33,8 +34,8 @@ class LSALookupSid:
         445: {'bindstr': r'ncacn_np:%s[\pipe\lsarpc]', 'set_host': True},
         }
 
-    def __init__(self, username, password, domain, port = None,
-                 hashes = None, maxRid=4000):
+    def __init__(self, username='', password='', domain='', port = None,
+                 hashes = None, domain_sids = False, maxRid=4000):
 
         self.__username = username
         self.__password = password
@@ -43,6 +44,7 @@ class LSALookupSid:
         self.__domain = domain
         self.__lmhash = ''
         self.__nthash = ''
+        self.__domain_sids = domain_sids
         if hashes is not None:
             self.__lmhash, self.__nthash = hashes.split(':')
 
@@ -64,9 +66,10 @@ class LSALookupSid:
 
         try:
             self.__bruteForce(rpctransport, self.__maxRid)
-        except Exception, e:
-            #import traceback
-            #print traceback.print_exc()
+        except Exception as e:
+            if logging.getLogger().level == logging.DEBUG:
+                import traceback
+                traceback.print_exc()
             logging.critical(str(e))
             raise
 
@@ -83,17 +86,23 @@ class LSALookupSid:
         #dce.set_max_fragment_size(32)
 
         dce.bind(lsat.MSRPC_UUID_LSAT)
-        resp = lsat.hLsarOpenPolicy2(dce, MAXIMUM_ALLOWED | lsat.POLICY_LOOKUP_NAMES)
+        
+        resp = lsad.hLsarOpenPolicy2(dce, MAXIMUM_ALLOWED | lsat.POLICY_LOOKUP_NAMES)
         policyHandle = resp['PolicyHandle']
 
-        resp = lsad.hLsarQueryInformationPolicy2(dce, policyHandle, lsad.POLICY_INFORMATION_CLASS.PolicyAccountDomainInformation)
+        if self.__domain_sids: # get the Domain SID
+            resp = lsad.hLsarQueryInformationPolicy2(dce, policyHandle, lsad.POLICY_INFORMATION_CLASS.PolicyPrimaryDomainInformation)
+            domainSid =  resp['PolicyInformation']['PolicyPrimaryDomainInfo']['Sid'].formatCanonical()
+        else: # Get the target host SID
+            resp = lsad.hLsarQueryInformationPolicy2(dce, policyHandle, lsad.POLICY_INFORMATION_CLASS.PolicyAccountDomainInformation)
+            domainSid = resp['PolicyInformation']['PolicyAccountDomainInfo']['DomainSid'].formatCanonical()
 
-        domainSid = resp['PolicyInformation']['PolicyAccountDomainInfo']['DomainSid'].formatCanonical()
+        logging.info('Domain SID is: %s' % domainSid)
 
         soFar = 0
         SIMULTANEOUS = 1000
-        for j in range(maxRid/SIMULTANEOUS+1):
-            if (maxRid - soFar) / SIMULTANEOUS == 0:
+        for j in range(maxRid//SIMULTANEOUS+1):
+            if (maxRid - soFar) // SIMULTANEOUS == 0:
                 sidsToCheck = (maxRid - soFar) % SIMULTANEOUS
             else: 
                 sidsToCheck = SIMULTANEOUS
@@ -102,11 +111,11 @@ class LSALookupSid:
                 break
 
             sids = list()
-            for i in xrange(soFar, soFar+sidsToCheck):
+            for i in range(soFar, soFar+sidsToCheck):
                 sids.append(domainSid + '-%d' % i)
             try:
                 lsat.hLsarLookupSids(dce, policyHandle, sids,lsat.LSAP_LOOKUP_LEVEL.LsapLookupWksta)
-            except DCERPCException, e:
+            except DCERPCException as e:
                 if str(e).find('STATUS_NONE_MAPPED') >= 0:
                     soFar += SIMULTANEOUS
                     continue
@@ -117,9 +126,9 @@ class LSALookupSid:
 
             for n, item in enumerate(resp['TranslatedNames']['Names']):
                 if item['Use'] != SID_NAME_USE.SidTypeUnknown:
-                    print "%d: %s\\%s (%s)" % (
+                    print("%d: %s\\%s (%s)" % (
                     soFar + n, resp['ReferencedDomains']['Domains'][item['DomainIndex']]['Name'], item['Name'],
-                    SID_NAME_USE.enumItems(item['Use']).name)
+                    SID_NAME_USE.enumItems(item['Use']).name))
             soFar += SIMULTANEOUS
 
         dce.disconnect()
@@ -135,7 +144,7 @@ if __name__ == '__main__':
     if sys.stdout.encoding is None:
         # Output is redirected to a file
         sys.stdout = codecs.getwriter('utf8')(sys.stdout)
-    print version.BANNER
+    print(version.BANNER)
 
     parser = argparse.ArgumentParser()
 
@@ -145,14 +154,16 @@ if __name__ == '__main__':
     group = parser.add_argument_group('connection')
 
     group.add_argument('-target-ip', action='store', metavar="ip address", help='IP Address of the target machine. '
-                       'If ommited it will use whatever was specified as target. This is useful when target is the '
+                       'If omitted it will use whatever was specified as target. This is useful when target is the '
                        'NetBIOS name and you cannot resolve it')
     group.add_argument('-port', choices=['135', '139', '445'], nargs='?', default='445', metavar="destination port",
                        help='Destination port to connect to SMB Server')
+    group.add_argument('-domain-sids', action='store_true', help='Enumerate Domain SIDs (will likely forward requests to the DC)')
 
     group = parser.add_argument_group('authentication')
 
     group.add_argument('-hashes', action="store", metavar = "LMHASH:NTHASH", help='NTLM hashes, format is LMHASH:NTHASH')
+    group.add_argument('-no-pass', action="store_true", help='don\'t ask for password (useful when proxying through smbrelayx)')
 
     if len(sys.argv)==1:
         parser.print_help()
@@ -173,14 +184,14 @@ if __name__ == '__main__':
     if domain is None:
         domain = ''
 
-    if password == '' and username != '' and options.hashes is None:
+    if password == '' and username != '' and options.hashes is None and options.no_pass is False:
         from getpass import getpass
         password = getpass("Password:")
 
     if options.target_ip is None:
         options.target_ip = remoteName
 
-    lookup = LSALookupSid(username, password, domain, int(options.port), options.hashes, options.maxRid)
+    lookup = LSALookupSid(username, password, domain, int(options.port), options.hashes, options.domain_sids, options.maxRid)
     try:
         lookup.dump(remoteName, options.target_ip)
     except:

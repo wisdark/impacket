@@ -1,4 +1,4 @@
-# Copyright (c) 2003-2016 CORE Security Technologies
+# SECUREAUTH LABS. Copyright 2018 SecureAuth Corporation. All rights reserved.
 #
 # This software is provided under under a slightly modified version
 # of the Apache Software License. See the accompanying LICENSE file
@@ -11,7 +11,7 @@
 #
 #   Best way to learn how to use these calls is to grab the protocol standard
 #   so you understand what the call does, and then read the test case located
-#   at https://github.com/CoreSecurity/impacket/tree/master/impacket/testcases/SMB_RPC
+#   at https://github.com/SecureAuthCorp/impacket/tree/master/tests/SMB_RPC
 #
 #   Some calls have helper functions, which makes it even easier to use.
 #   They are located at the end of this file. 
@@ -31,12 +31,13 @@ from impacket.dcerpc.v5.lsad import PLSA_FOREST_TRUST_INFORMATION
 from impacket.dcerpc.v5.rpcrt import DCERPCException
 from impacket.structure import Structure
 from impacket import ntlm, crypto, LOG
-import hmac, hashlib
+import hmac
+import hashlib
 try:
-    from Crypto.Cipher import DES, AES, ARC4
-except Exception:
-    LOG.critical("Warning: You don't have any crypto installed. You need PyCrypto")
-    LOG.critical("See http://www.pycrypto.org/")
+    from Cryptodome.Cipher import DES, AES, ARC4
+except ImportError:
+    LOG.critical("Warning: You don't have any crypto installed. You need pycryptodomex")
+    LOG.critical("See https://pypi.org/project/pycryptodomex/")
 
 MSRPC_UUID_NRPC = uuidtup_to_bin(('12345678-1234-ABCD-EF00-01234567CFFB', '1.0'))
 
@@ -46,11 +47,11 @@ class DCERPCSessionError(DCERPCException):
 
     def __str__( self ):
         key = self.error_code
-        if system_errors.ERROR_MESSAGES.has_key(key):
+        if key in system_errors.ERROR_MESSAGES:
             error_msg_short = system_errors.ERROR_MESSAGES[key][0]
             error_msg_verbose = system_errors.ERROR_MESSAGES[key][1] 
             return 'NRPC SessionError: code: 0x%x - %s - %s' % (self.error_code, error_msg_short, error_msg_verbose)
-        elif nt_errors.ERROR_MESSAGES.has_key(key):
+        elif key in nt_errors.ERROR_MESSAGES:
             error_msg_short = nt_errors.ERROR_MESSAGES[key][0]
             error_msg_verbose = nt_errors.ERROR_MESSAGES[key][1] 
             return 'NRPC SessionError: code: 0x%x - %s - %s' % (self.error_code, error_msg_short, error_msg_verbose)
@@ -136,7 +137,7 @@ PLOGONSRV_HANDLE = LPWSTR
 # 2.2.1.1.1 CYPHER_BLOCK
 class CYPHER_BLOCK(NDRSTRUCT):
     structure = (
-        ('Data', '8s=""'),
+        ('Data', '8s=b""'),
     )
     def getAlignment(self):
         return 1
@@ -1654,7 +1655,7 @@ def ComputeSessionKeyStrongKey(sharedSecret, clientChallenge, serverChallenge, s
         M4SS = sharedSecretHash
 
     md5 = hashlib.new('md5')
-    md5.update('\x00'*4)
+    md5.update(b'\x00'*4)
     md5.update(clientChallenge)
     md5.update(serverChallenge)
     finalMD5 = md5.digest()
@@ -2764,7 +2765,7 @@ def hNetrLogonGetDomainInfo(dce, serverName, computerName, authenticator, return
     request['ComputerName'] = checkNullString(computerName)
     request['Authenticator'] = authenticator
     if returnAuthenticator == 0:
-        request['ReturnAuthenticator']['Credential'] = '\x00'*8
+        request['ReturnAuthenticator']['Credential'] = b'\x00'*8
         request['ReturnAuthenticator']['Timestamp'] = 0
     else:
         request['ReturnAuthenticator'] = returnAuthenticator
@@ -2790,7 +2791,7 @@ def hNetrLogonGetCapabilities(dce, serverName, computerName, authenticator, retu
     request['ComputerName'] = checkNullString(computerName)
     request['Authenticator'] = authenticator
     if returnAuthenticator == 0:
-        request['ReturnAuthenticator']['Credential'] = '\x00'*8
+        request['ReturnAuthenticator']['Credential'] = b'\x00'*8
         request['ReturnAuthenticator']['Timestamp'] = 0
     else:
         request['ReturnAuthenticator'] = returnAuthenticator
@@ -2805,6 +2806,3 @@ def hNetrServerGetTrustInfo(dce, trustedDcName, accountName, secureChannelType, 
     request['ComputerName'] = checkNullString(computerName)
     request['Authenticator'] = authenticator
     return dce.request(request)
-
-
-

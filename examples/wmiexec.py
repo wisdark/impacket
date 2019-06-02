@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# Copyright (c) 2003-2016 CORE Security Technologies
+# SECUREAUTH LABS. Copyright 2018 SecureAuth Corporation. All rights reserved.
 #
 # This software is provided under under a slightly modified version
 # of the Apache Software License. See the accompanying LICENSE file
@@ -18,14 +18,14 @@
 # Reference for:
 #  DCOM
 #
-
+from __future__ import division
+from __future__ import print_function
 import sys
 import os
 import cmd
 import argparse
 import time
 import logging
-import string
 import ntpath
 
 from impacket.examples import logger
@@ -34,9 +34,10 @@ from impacket.smbconnection import SMBConnection, SMB_DIALECT, SMB2_DIALECT_002,
 from impacket.dcerpc.v5.dcomrt import DCOMConnection
 from impacket.dcerpc.v5.dcom import wmi
 from impacket.dcerpc.v5.dtypes import NULL
+from six import PY2
 
 OUTPUT_FILENAME = '__' + str(time.time())
-CODEC = sys.getdefaultencoding()
+CODEC = sys.stdout.encoding
 
 class WMIEXEC:
     def __init__(self, command='', username='', password='', domain='', hashes=None, aesKey=None, share=None,
@@ -92,9 +93,10 @@ class WMIEXEC:
                 self.shell.onecmd(self.__command)
             else:
                 self.shell.cmdloop()
-        except  (Exception, KeyboardInterrupt), e:
-            #import traceback
-            #traceback.print_exc()
+        except  (Exception, KeyboardInterrupt) as e:
+            if logging.getLogger().level == logging.DEBUG:
+                import traceback
+                traceback.print_exc()
             logging.error(str(e))
             if smbConnection is not None:
                 smbConnection.logoff()
@@ -111,11 +113,11 @@ class RemoteShell(cmd.Cmd):
         cmd.Cmd.__init__(self)
         self.__share = share
         self.__output = '\\' + OUTPUT_FILENAME
-        self.__outputBuffer = unicode('')
+        self.__outputBuffer = str('')
         self.__shell = 'cmd.exe /Q /c '
         self.__win32Process = win32Process
         self.__transferClient = smbConnection
-        self.__pwd = unicode('C:\\')
+        self.__pwd = str('C:\\')
         self.__noOutput = False
         self.intro = '[!] Launching semi-interactive shell - Careful what you execute\n[!] Press help for extra shell commands'
 
@@ -130,24 +132,25 @@ class RemoteShell(cmd.Cmd):
         os.system(s)
 
     def do_help(self, line):
-        print """
+        print("""
  lcd {path}                 - changes the current local directory to {path}
  exit                       - terminates the server process (and this session)
  put {src_file, dst_path}   - uploads a local file to the dst_path (dst_path = default current directory)
  get {file}                 - downloads pathname to the current local dir 
  ! {cmd}                    - executes a local shell cmd
-""" 
+""") 
 
     def do_lcd(self, s):
         if s == '':
-            print os.getcwd()
+            print(os.getcwd())
         else:
             try:
                 os.chdir(s)
-            except Exception, e:
+            except Exception as e:
                 logging.error(str(e))
 
     def do_get(self, src_path):
+
         try:
             import ntpath
             newPath = ntpath.normpath(ntpath.join(self.__pwd, src_path))
@@ -157,10 +160,14 @@ class RemoteShell(cmd.Cmd):
             logging.info("Downloading %s\\%s" % (drive, tail))
             self.__transferClient.getFile(drive[:-1]+'$', tail, fh.write)
             fh.close()
-        except Exception, e:
+
+        except Exception as e:
             logging.error(str(e))
-            os.remove(filename)
-            pass
+
+            if os.path.exists(filename):
+                os.remove(filename)
+
+
 
     def do_put(self, s):
         try:
@@ -174,14 +181,14 @@ class RemoteShell(cmd.Cmd):
 
             src_file = os.path.basename(src_path)
             fh = open(src_path, 'rb')
-            dst_path = string.replace(dst_path, '/','\\')
+            dst_path = dst_path.replace('/','\\')
             import ntpath
             pathname = ntpath.join(ntpath.join(self.__pwd,dst_path), src_file)
             drive, tail = ntpath.splitdrive(pathname)
             logging.info("Uploading %s to %s" % (src_file, pathname))
             self.__transferClient.putFile(drive[:-1]+'$', tail, fh.read)
             fh.close()
-        except Exception, e:
+        except Exception as e:
             logging.critical(str(e))
             pass
 
@@ -194,13 +201,16 @@ class RemoteShell(cmd.Cmd):
     def do_cd(self, s):
         self.execute_remote('cd ' + s)
         if len(self.__outputBuffer.strip('\r\n')) > 0:
-            print self.__outputBuffer.decode(CODEC)
+            print(self.__outputBuffer)
             self.__outputBuffer = ''
         else:
-            self.__pwd = ntpath.normpath(ntpath.join(self.__pwd, s.decode(sys.stdin.encoding)))
+            if PY2:
+                self.__pwd = ntpath.normpath(ntpath.join(self.__pwd, s.decode(sys.stdin.encoding)))
+            else:
+                self.__pwd = ntpath.normpath(ntpath.join(self.__pwd, s))
             self.execute_remote('cd ')
-            self.__pwd = self.__outputBuffer.strip('\r\n').decode(CODEC)
-            self.prompt = unicode(self.__pwd + '>').encode(sys.stdout.encoding)
+            self.__pwd = self.__outputBuffer.strip('\r\n')
+            self.prompt = (self.__pwd + '>')
             self.__outputBuffer = ''
 
     def default(self, line):
@@ -210,14 +220,14 @@ class RemoteShell(cmd.Cmd):
             self.execute_remote(line)
             if len(self.__outputBuffer.strip('\r\n')) > 0: 
                 # Something went wrong
-                print self.__outputBuffer.decode(CODEC)
+                print(self.__outputBuffer)
                 self.__outputBuffer = ''
             else:
                 # Drive valid, now we should get the current path
                 self.__pwd = line
                 self.execute_remote('cd ')
-                self.__pwd = self.__outputBuffer.strip('\r\n')
-                self.prompt = unicode(self.__pwd + '>').encode(sys.stdout.encoding)
+                self.__pwd = self.__outputBuffer.strip('\r\n').encode(CODEC)
+                self.prompt = (self.__pwd + b'>')
                 self.__outputBuffer = ''
         else:
             if line != '':
@@ -225,7 +235,13 @@ class RemoteShell(cmd.Cmd):
 
     def get_output(self):
         def output_callback(data):
-            self.__outputBuffer += data
+            try:
+                self.__outputBuffer += data.decode(CODEC)
+            except UnicodeDecodeError:
+                logging.error('Decoding error detected, consider running chcp.com at the target,\nmap the result with '
+                              'https://docs.python.org/2.4/lib/standard-encodings.html\nand then execute wmiexec.py '
+                              'again with -codec and the corresponding codec')
+                self.__outputBuffer += data.decode(CODEC, errors='replace')
 
         if self.__noOutput is True:
             self.__outputBuffer = ''
@@ -235,7 +251,7 @@ class RemoteShell(cmd.Cmd):
             try:
                 self.__transferClient.getFile(self.__share, self.__output, output_callback)
                 break
-            except Exception, e:
+            except Exception as e:
                 if str(e).find('STATUS_SHARING_VIOLATION') >=0:
                     # Output not finished, let's wait
                     time.sleep(1)
@@ -251,18 +267,15 @@ class RemoteShell(cmd.Cmd):
         command = self.__shell + data 
         if self.__noOutput is False:
             command += ' 1> ' + '\\\\127.0.0.1\\%s' % self.__share + self.__output  + ' 2>&1'
-        self.__win32Process.Create(command.decode(sys.stdin.encoding), self.__pwd, None)
+        if PY2:
+            self.__win32Process.Create(command.decode(sys.stdin.encoding), self.__pwd, None)
+        else:
+            self.__win32Process.Create(command, self.__pwd, None)
         self.get_output()
 
     def send_data(self, data):
-        try:
-            self.execute_remote(data)
-            print self.__outputBuffer.decode(CODEC)
-        except UnicodeDecodeError, e:
-            logging.error('Decoding error detected, consider running chcp.com at the target,\nmap the result with '
-                          'https://docs.python.org/2.4/lib/standard-encodings.html\nand then execute wmiexec.py '
-                          'again with -codec and the corresponding codec')
-            print self.__outputBuffer
+        self.execute_remote(data)
+        print(self.__outputBuffer)
         self.__outputBuffer = ''
 
 class AuthFileSyntaxError(Exception):
@@ -318,7 +331,7 @@ def load_smbclient_auth_file(path):
 if __name__ == '__main__':
     # Init the example's logger theme
     logger.init()
-    print version.BANNER
+    print(version.BANNER)
 
     parser = argparse.ArgumentParser(add_help = True, description = "Executes a semi-interactive shell using Windows "
                                                                     "Management Instrumentation.")
@@ -359,6 +372,9 @@ if __name__ == '__main__':
 
     if options.codec is not None:
         CODEC = options.codec
+    else:
+        if CODEC is None:
+            CODEC = 'UTF-8'
 
     if ' '.join(options.command) == ' ' and options.nooutput is True:
         logging.error("-nooutput switch and interactive shell not supported")
@@ -397,8 +413,13 @@ if __name__ == '__main__':
         executer = WMIEXEC(' '.join(options.command), username, password, domain, options.hashes, options.aesKey,
                            options.share, options.nooutput, options.k, options.dc_ip)
         executer.run(address)
-    except (Exception, KeyboardInterrupt), e:
-        #import traceback
-        #print traceback.print_exc()
+    except KeyboardInterrupt as e:
         logging.error(str(e))
+    except Exception as e:
+        if logging.getLogger().level == logging.DEBUG:
+            import traceback
+            traceback.print_exc()
+        logging.error(str(e))
+        sys.exit(1)
+        
     sys.exit(0)

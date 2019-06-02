@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# Copyright (c) 2003-2016 CORE Security Technologies
+# SECUREAUTH LABS. Copyright 2018 SecureAuth Corporation. All rights reserved.
 #
 # This software is provided under under a slightly modified version
 # of the Apache Software License. See the accompanying LICENSE file
@@ -14,7 +14,8 @@
 #
 # Reference for:
 #  DCE/RPC for TSCH
-
+from __future__ import division
+from __future__ import print_function
 import string
 import sys
 import argparse
@@ -26,6 +27,7 @@ from impacket.examples import logger
 from impacket import version
 from impacket.dcerpc.v5 import tsch, transport
 from impacket.dcerpc.v5.dtypes import NULL
+from impacket.dcerpc.v5.rpcrt import RPC_C_AUTHN_GSS_NEGOTIATE
 
 
 class TSCH_EXEC:
@@ -54,24 +56,27 @@ class TSCH_EXEC:
             rpctransport.set_kerberos(self.__doKerberos, self.__kdcHost)
         try:
             self.doStuff(rpctransport)
-        except Exception, e:
-            #import traceback
-            #traceback.print_exc()
+        except Exception as e:
+            if logging.getLogger().level == logging.DEBUG:
+                import traceback
+                traceback.print_exc()
             logging.error(e)
             if str(e).find('STATUS_OBJECT_NAME_NOT_FOUND') >=0:
                 logging.info('When STATUS_OBJECT_NAME_NOT_FOUND is received, try running again. It might work')
 
     def doStuff(self, rpctransport):
         def output_callback(data):
-            print data
+            print(data.decode('utf-8'))
 
         dce = rpctransport.get_dce_rpc()
 
         dce.set_credentials(*rpctransport.get_credentials())
+        if self.__doKerberos is True:
+            dce.set_auth_type(RPC_C_AUTHN_GSS_NEGOTIATE)
         dce.connect()
         #dce.set_auth_level(ntlm.NTLM_AUTH_PKT_PRIVACY)
         dce.bind(tsch.MSRPC_UUID_TSCHS)
-        tmpName = ''.join([random.choice(string.letters) for _ in range(8)])
+        tmpName = ''.join([random.choice(string.ascii_letters) for _ in range(8)])
         tmpFileName = tmpName + '.tmp'
 
         xml = """<?xml version="1.0" encoding="UTF-16"?>
@@ -138,7 +143,7 @@ class TSCH_EXEC:
             logging.info('Deleting task \\%s' % tmpName)
             tsch.hSchRpcDelete(dce, '\\%s' % tmpName)
             taskCreated = False
-        except tsch.DCERPCSessionError, e:
+        except tsch.DCERPCSessionError as e:
             logging.error(e)
             e.get_packet().dump()
         finally:
@@ -152,7 +157,7 @@ class TSCH_EXEC:
                 logging.info('Attempting to read ADMIN$\\Temp\\%s' % tmpFileName)
                 smbConnection.getFile('ADMIN$', 'Temp\\%s' % tmpFileName, output_callback)
                 break
-            except Exception, e:
+            except Exception as e:
                 if str(e).find('SHARING') > 0:
                     time.sleep(3)
                 elif str(e).find('STATUS_OBJECT_NAME_NOT_FOUND') >= 0:
@@ -172,7 +177,7 @@ class TSCH_EXEC:
 
 # Process command-line arguments.
 if __name__ == '__main__':
-    print version.BANNER
+    print(version.BANNER)
     # Init the example's logger theme
     logger.init()
 
@@ -194,13 +199,17 @@ if __name__ == '__main__':
     group.add_argument('-aesKey', action="store", metavar = "hex key", help='AES key to use for Kerberos Authentication '
                                                                             '(128 or 256 bits)')
     group.add_argument('-dc-ip', action='store',metavar = "ip address",  help='IP Address of the domain controller. '
-                                         'If ommited it use the domain part (FQDN) specified in the target parameter')
+                                         'If omitted it will use the domain part (FQDN) specified in the target parameter')
 
     if len(sys.argv)==1:
         parser.print_help()
         sys.exit(1)
 
     options = parser.parse_args()
+
+    if ''.join(options.command) == ' ':
+        logging.error('You need to specify a command to execute!')
+        sys.exit(1)
 
     if options.debug is True:
         logging.getLogger().setLevel(logging.DEBUG)
