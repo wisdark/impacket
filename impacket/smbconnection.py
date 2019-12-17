@@ -21,7 +21,8 @@ from impacket.smb3structs import SMB2Packet, SMB2_DIALECT_002, SMB2_DIALECT_21, 
     FILE_SHARE_WRITE, FILE_SHARE_DELETE, FILE_NON_DIRECTORY_FILE, FILE_OVERWRITE_IF, FILE_ATTRIBUTE_NORMAL, \
     SMB2_IL_IMPERSONATION, SMB2_OPLOCK_LEVEL_NONE, FILE_READ_DATA , FILE_WRITE_DATA, FILE_OPEN, GENERIC_READ, GENERIC_WRITE, \
     FILE_OPEN_REPARSE_POINT, MOUNT_POINT_REPARSE_DATA_STRUCTURE, FSCTL_SET_REPARSE_POINT, SMB2_0_IOCTL_IS_FSCTL, \
-    MOUNT_POINT_REPARSE_GUID_DATA_STRUCTURE, FSCTL_DELETE_REPARSE_POINT
+    MOUNT_POINT_REPARSE_GUID_DATA_STRUCTURE, FSCTL_DELETE_REPARSE_POINT, FSCTL_SRV_ENUMERATE_SNAPSHOTS, SRV_SNAPSHOT_ARRAY, \
+    FILE_SYNCHRONOUS_IO_NONALERT, FILE_READ_EA, FILE_READ_ATTRIBUTES, READ_CONTROL, SYNCHRONIZE
 
 
 # So the user doesn't need to import smb, the smb3 are already in here
@@ -219,6 +220,9 @@ class SMBConnection:
     def getServerDNSDomainName(self):
         return self._SMBConnection.get_server_dns_domain_name()
 
+    def getServerDNSHostName(self):
+        return self._SMBConnection.get_server_dns_host_name()
+
     def getServerOS(self):
         return self._SMBConnection.get_server_os()
 
@@ -348,9 +352,9 @@ class SMBConnection:
                     # So, if that's the case we'll force using RC4 by converting
                     # the password to lm/nt hashes and hope for the best. If that's already
                     # done, byebye.
-                    if lmhash is '' and nthash is '' and (aesKey is '' or aesKey is None) and TGT is None and TGS is None:
+                    if lmhash == '' and nthash == '' and (aesKey == '' or aesKey is None) and TGT is None and TGS is None:
                         lmhash = compute_lmhash(password)
-                        nthash = compute_nthash(password) 
+                        nthash = compute_nthash(password)
                     else:
                         raise e
                 else:
@@ -628,7 +632,7 @@ class SMBConnection:
         """
         removes a file
 
-        :param string shareName: a valid name for the share where the file is to be deleted 
+        :param string shareName: a valid name for the share where the file is to be deleted
         :param string pathName: the path name to remove
 
         :return: None, raises a SessionError exception if error.
@@ -815,6 +819,42 @@ class SMBConnection:
         except (smb.SessionError, smb3.SessionError) as e:
             raise SessionError(e.get_error_code(), e.get_error_packet())
 
+    def listSnapshots(self, tid, path):
+        """
+        lists the snapshots for the given directory
+
+        :param int tid: tree id of current connection
+        :param string path: directory to list the snapshots of
+        """
+
+        # Verify we're under SMB2+ session
+        if self.getDialect() not in [SMB2_DIALECT_002, SMB2_DIALECT_21, SMB2_DIALECT_30]:
+            raise SessionError(error = nt_errors.STATUS_NOT_SUPPORTED)
+
+        fid = self.openFile(tid, path, FILE_READ_DATA | FILE_READ_EA | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE,
+                            fileAttributes=None, creationOption=FILE_SYNCHRONOUS_IO_NONALERT,
+                            shareMode=FILE_SHARE_READ | FILE_SHARE_WRITE)
+
+        # first send with maxOutputResponse=16 to get the required size
+        try:
+            snapshotData = SRV_SNAPSHOT_ARRAY(self._SMBConnection.ioctl(tid, fid, FSCTL_SRV_ENUMERATE_SNAPSHOTS,
+                                  flags=SMB2_0_IOCTL_IS_FSCTL, maxOutputResponse=16))
+        except (smb.SessionError, smb3.SessionError) as e:
+            self.closeFile(tid, fid)
+            raise SessionError(e.get_error_code(), e.get_error_packet())
+
+        if snapshotData['SnapShotArraySize'] >= 52:
+            # now send an appropriate sized buffer
+            try:
+               snapshotData = SRV_SNAPSHOT_ARRAY(self._SMBConnection.ioctl(tid, fid, FSCTL_SRV_ENUMERATE_SNAPSHOTS,
+                                  flags=SMB2_0_IOCTL_IS_FSCTL, maxOutputResponse=snapshotData['SnapShotArraySize']+12))
+            except (smb.SessionError, smb3.SessionError) as e:
+               self.closeFile(tid, fid)
+               raise SessionError(e.get_error_code(), e.get_error_packet())
+
+        self.closeFile(tid, fid)
+        return list(filter(None, snapshotData['SnapShots'].decode('utf16').split('\x00')))
+
     def createMountPoint(self, tid, path, target):
         """
         creates a mount point at an existing directory
@@ -930,7 +970,10 @@ class SMBConnection:
             return self._SMBConnection.set_session_key(key)
         else:
             return self._SMBConnection.setSessionKey(key)
-            
+
+    def setHostnameValidation(self, validate, accept_empty, hostname):
+        return self._SMBConnection.set_hostname_validation(validate, accept_empty, hostname)
+
     def close(self):
         """
         logs off and closes the underlying _NetBIOSSession()
@@ -953,7 +996,7 @@ class SessionError(Exception):
         Exception.__init__(self)
         self.error = error
         self.packet = packet
-       
+
     def getErrorCode( self ):
         return self.error
 

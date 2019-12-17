@@ -8,18 +8,18 @@
 #
 # Description:
 #   [MS-SMB2] Protocol Implementation (SMB2 and SMB3)
-#   As you might see in the code, it's implemented strictly following 
+#   As you might see in the code, it's implemented strictly following
 #   the structures defined in the protocol specification. This may
 #   not be the most efficient way (e.g. self._Connection is the
 #   same to self._Session in the context of this library ) but
 #   it certainly helps following the document way easier.
 #
-# ToDo: 
+# ToDo:
 # [X] Implement SMB2_CHANGE_NOTIFY
 # [X] Implement SMB2_QUERY_INFO
 # [X] Implement SMB2_SET_INFO
 # [ ] Implement SMB2_OPLOCK_BREAK
-# [X] Implement SMB3 signing 
+# [X] Implement SMB3 signing
 # [X] Implement SMB3 encryption
 # [ ] Add more backward compatible commands from the smb.py code
 # [ ] Fix up all the 'ToDo' comments inside the code
@@ -62,7 +62,7 @@ TREE_CONNECT = {
     'TreeConnectId'   : 0,
     'Session'         : 0,
     'IsDfsShare'      : False,
-    # If the client implements the SMB 3.0 dialect, 
+    # If the client implements the SMB 3.0 dialect,
     # the client MUST also implement the following
     'IsCAShare'       : False,
     'EncryptData'     : False,
@@ -89,7 +89,7 @@ OPEN = {
     'LastDisconnectTime' : 0,
     'ResilientTimeout'   : 0,
     'OperationBuckets'   : [],
-    # If the client implements the SMB 3.0 dialect, 
+    # If the client implements the SMB 3.0 dialect,
     # the client MUST implement the following
     'CreateGuid'         : '',
     'IsPersistent'       : False,
@@ -117,7 +117,7 @@ class SessionError(Exception):
         Exception.__init__(self)
         self.error = error
         self.packet = packet
-       
+
     def get_error_code( self ):
         return self.error
 
@@ -129,6 +129,9 @@ class SessionError(Exception):
 
 
 class SMB3:
+    class HostnameValidationException(Exception):
+        pass
+
     def __init__(self, remote_name, remote_host, my_name=None, host_type=nmb.TYPE_SERVER, sess_port=445, timeout=60,
                  UDP=0, preferredDialect=None, session=None, negSessionResponse=None):
 
@@ -145,7 +148,7 @@ class SMB3:
         # Per Transport Connection Data
         self._Connection = {
             # Indexed by SessionID
-            #'SessionTable'             : {},    
+            #'SessionTable'             : {},
             # Indexed by MessageID
             'OutstandingRequests'      : {},
             'OutstandingResponses'     : {},    #
@@ -157,12 +160,12 @@ class SMB3:
             'ServerGuid'               : '',    #
             'RequireSigning'           : False, #
             'ServerName'               : '',    #
-            # If the client implements the SMB 2.1 or SMB 3.0 dialects, it MUST 
+            # If the client implements the SMB 2.1 or SMB 3.0 dialects, it MUST
             # also implement the following
             'Dialect'                  : 0,    #
             'SupportsFileLeasing'      : False, #
             'SupportsMultiCredit'      : False, #
-            # If the client implements the SMB 3.0 dialect, 
+            # If the client implements the SMB 3.0 dialect,
             # it MUST also implement the following
             'SupportsDirectoryLeasing' : False, #
             'SupportsMultiChannel'     : False, #
@@ -176,16 +179,16 @@ class SMB3:
             'ServerIP'                 : '',    #
             'ClientName'               : '',    #
         }
-   
+
         self._Session = {
             'SessionID'                : 0,   #
             'TreeConnectTable'         : {},    #
             'SessionKey'               : b'',    #
             'SigningRequired'          : False, #
-            'Connection'               : 0,     # 
+            'Connection'               : 0,     #
             'UserCredentials'          : '',    #
             'OpenTable'                : {},    #
-            # If the client implements the SMB 3.0 dialect, 
+            # If the client implements the SMB 3.0 dialect,
             # it MUST also implement the following
             'ChannelList'              : [],
             'ChannelSequence'          : 0,
@@ -193,24 +196,30 @@ class SMB3:
             'EncryptData'              : True,
             'EncryptionKey'            : '',
             'DecryptionKey'            : '',
-            'SigningKey'               : '',  
+            'SigningKey'               : '',
             'ApplicationKey'           : b'',
             # Outside the protocol
-            'SessionFlags'             : 0,     # 
+            'SessionFlags'             : 0,     #
             'ServerName'               : '',    #
             'ServerDomain'             : '',    #
             'ServerDNSDomainName'      : '',    #
+            'ServerDNSHostName'        : '',    #
             'ServerOS'                 : '',    #
             'SigningActivated'         : False, #
         }
 
         self.SMB_PACKET = SMB2Packet
-        
+
         self._timeout = timeout
         self._Connection['ServerIP'] = remote_host
         self._NetBIOSSession = None
         self._preferredDialect = preferredDialect
         self._doKerberos = False
+
+        # Strict host validation - off by default
+        self._strict_hostname_validation = False
+        self._validation_allow_absent = True
+        self._accepted_hostname = ''
 
         self.__userName = ''
         self.__password = ''
@@ -290,6 +299,9 @@ class SMB3:
     def getServerDNSDomainName(self):
         return self._Session['ServerDNSDomainName']
 
+    def getServerDNSHostName(self):
+        return self._Session['ServerDNSHostName']
+
     def getServerOS(self):
         return self._Session['ServerOS']
 
@@ -303,7 +315,7 @@ class SMB3:
         return self._Session['ServerOSBuild']
 
     def isGuestSession(self):
-        return self._Session['SessionFlags'] & SMB2_SESSION_FLAG_IS_GUEST 
+        return self._Session['SessionFlags'] & SMB2_SESSION_FLAG_IS_GUEST
 
     def setTimeout(self, timeout):
         self._timeout = timeout
@@ -330,7 +342,7 @@ class SMB3:
                 p = packet.getData()
                 signature = crypto.AES_CMAC(self._Session['SigningKey'], p, len(p))
                 packet['Signature'] = signature
-     
+
     def sendSMB(self, packet):
         # The idea here is to receive multiple/single commands and create a compound request, and send it
         # Should return the MessageID for later retrieval. Implement compounded related requests.
@@ -370,7 +382,7 @@ class SMB3:
             transformHeader['Nonce'] = ''.join([rand.choice(string.ascii_letters) for _ in range(11)])
             transformHeader['OriginalMessageSize'] = len(plainText)
             transformHeader['EncryptionAlgorithm'] = SMB2_ENCRYPTION_AES128_CCM
-            transformHeader['SessionID'] = self._Session['SessionID'] 
+            transformHeader['SessionID'] = self._Session['SessionID']
             cipher = AES.new(self._Session['EncryptionKey'], AES.MODE_CCM,  b(transformHeader['Nonce']))
             cipher.update(transformHeader.getData()[20:])
             cipherText = cipher.encrypt(plainText)
@@ -386,7 +398,7 @@ class SMB3:
     def recvSMB(self, packetID = None):
         # First, verify we don't have the packet already
         if packetID in self._Connection['OutstandingResponses']:
-            return self._Connection['OutstandingResponses'].pop(packetID) 
+            return self._Connection['OutstandingResponses'].pop(packetID)
 
         data = self._NetBIOSSession.recv_packet(self._timeout)
 
@@ -399,8 +411,8 @@ class SMB3:
             #cipher.verify(transformHeader['Signature'])
             packet = SMB2Packet(plainText)
         else:
-            # In all SMB dialects for a response this field is interpreted as the Status field. 
-            # This field can be set to any value. For a list of valid status codes, 
+            # In all SMB dialects for a response this field is interpreted as the Status field.
+            # This field can be set to any value. For a list of valid status codes,
             # see [MS-ERREF] section 2.3.
             packet = SMB2Packet(data.get_trailer())
 
@@ -408,7 +420,7 @@ class SMB3:
         if packet['Status'] == STATUS_PENDING:
             status = STATUS_PENDING
             while status == STATUS_PENDING:
-                data = self._NetBIOSSession.recv_packet(self._timeout) 
+                data = self._NetBIOSSession.recv_packet(self._timeout)
                 if data.get_trailer().startswith(b'\xfeSMB'):
                     packet = SMB2Packet(data.get_trailer())
                 else:
@@ -431,7 +443,7 @@ class SMB3:
             return packet
         else:
             self._Connection['OutstandingResponses'][packet['MessageID']] = packet
-            return self.recvSMB(packetID) 
+            return self.recvSMB(packetID)
 
     def negotiateSession(self, preferredDialect = None, negSessionResponse = None):
         # Let's store some data for later use
@@ -504,8 +516,8 @@ class SMB3:
             self.__domain,
             self.__lmhash,
             self.__nthash,
-            self.__aesKey, 
-            self.__TGT, 
+            self.__aesKey,
+            self.__TGT,
             self.__TGS)
 
     def kerberosLogin(self, user, password, domain = '', lmhash = '', nthash = '', aesKey='', kdcHost = '', TGT=None, TGS=None):
@@ -533,7 +545,7 @@ class SMB3:
         self.__TGT      = TGT
         self.__TGS      = TGS
         self._doKerberos= True
-       
+
         sessionSetup = SMB2SessionSetup()
         if self.RequireMessageSigning is True:
            sessionSetup['SecurityMode'] = SMB2_NEGOTIATE_SIGNING_REQUIRED
@@ -559,7 +571,7 @@ class SMB3:
         else:
             tgt = TGT['KDC_REP']
             cipher = TGT['cipher']
-            sessionKey = TGT['sessionKey'] 
+            sessionKey = TGT['sessionKey']
 
         # Save the ticket
         # If you want, for debugging purposes
@@ -583,11 +595,11 @@ class SMB3:
         else:
             tgs = TGS['KDC_REP']
             cipher = TGS['cipher']
-            sessionKey = TGS['sessionKey'] 
+            sessionKey = TGS['sessionKey']
 
         # Let's build a NegTokenInit with a Kerberos REQ_AP
 
-        blob = SPNEGO_NegTokenInit() 
+        blob = SPNEGO_NegTokenInit()
 
         # Kerberos
         blob['MechTypes'] = [TypesMech['MS KRB5 - Microsoft Kerberos 5']]
@@ -596,7 +608,7 @@ class SMB3:
         tgs = decoder.decode(tgs, asn1Spec = TGS_REP())[0]
         ticket = Ticket()
         ticket.from_asn1(tgs['ticket'])
-        
+
         # Now let's build the AP_REQ
         apReq = AP_REQ()
         apReq['pvno'] = 5
@@ -662,7 +674,7 @@ class SMB3:
                 self._Session['ApplicationKey']  = crypto.KDF_CounterMode(self._Session['SessionKey'], b"SMB2APP\x00", b"SmbRpc\x00", 128)
                 self._Session['EncryptionKey']   = crypto.KDF_CounterMode(self._Session['SessionKey'], b"SMB2AESCCM\x00", b"ServerIn \x00", 128)
                 self._Session['DecryptionKey']   = crypto.KDF_CounterMode(self._Session['SessionKey'], b"SMB2AESCCM\x00", b"ServerOut\x00", 128)
-       
+
             return True
         else:
             # We clean the stuff we used in case we want to authenticate again
@@ -696,7 +708,7 @@ class SMB3:
         self.__aesKey   = ''
         self.__TGT      = None
         self.__TGS      = None
-       
+
         sessionSetup = SMB2SessionSetup()
         if self.RequireMessageSigning is True:
            sessionSetup['SecurityMode'] = SMB2_NEGOTIATE_SIGNING_REQUIRED
@@ -709,7 +721,7 @@ class SMB3:
         # Let's build a NegTokenInit with the NTLMSSP
         # TODO: In the future we should be able to choose different providers
 
-        blob = SPNEGO_NegTokenInit() 
+        blob = SPNEGO_NegTokenInit()
 
         # NTLMSSP
         blob['MechTypes'] = [TypesMech['NTLMSSP - Microsoft NTLM Security Support Provider']]
@@ -750,20 +762,30 @@ class SMB3:
                        self._Session['ServerName'] = av_pairs[ntlm.NTLMSSP_AV_HOSTNAME][1].decode('utf-16le')
                    except:
                        # For some reason, we couldn't decode Unicode here.. silently discard the operation
-                       pass 
+                       pass
                 if av_pairs[ntlm.NTLMSSP_AV_DOMAINNAME] is not None:
                    try:
-                       if self._Session['ServerName'] != av_pairs[ntlm.NTLMSSP_AV_DOMAINNAME][1].decode('utf-16le'): 
+                       if self._Session['ServerName'] != av_pairs[ntlm.NTLMSSP_AV_DOMAINNAME][1].decode('utf-16le'):
                            self._Session['ServerDomain'] = av_pairs[ntlm.NTLMSSP_AV_DOMAINNAME][1].decode('utf-16le')
                    except:
                        # For some reason, we couldn't decode Unicode here.. silently discard the operation
-                       pass 
+                       pass
                 if av_pairs[ntlm.NTLMSSP_AV_DNS_DOMAINNAME] is not None:
                    try:
                        self._Session['ServerDNSDomainName'] = av_pairs[ntlm.NTLMSSP_AV_DNS_DOMAINNAME][1].decode('utf-16le')
                    except:
                        # For some reason, we couldn't decode Unicode here.. silently discard the operation
-                       pass 
+                       pass
+
+                if av_pairs[ntlm.NTLMSSP_AV_DNS_HOSTNAME] is not None:
+                   try:
+                       self._Session['ServerDNSHostName'] = av_pairs[ntlm.NTLMSSP_AV_DNS_HOSTNAME][1].decode('utf-16le')
+                   except:
+                       # For some reason, we couldn't decode Unicode here.. silently discard the operation
+                       pass
+
+                if self._strict_hostname_validation:
+                    self.perform_hostname_validation()
 
                 # Parse Version to know the target Operating system name. Not provided elsewhere anymore
                 if 'Version' in ntlmChallenge.fields:
@@ -776,8 +798,8 @@ class SMB3:
                         self._Session["ServerOSBuild"] = struct.unpack('<H',version[2:4])[0]
 
             type3, exportedSessionKey = ntlm.getNTLMSSPType3(auth, respToken['ResponseToken'], user, password, domain, lmhash, nthash)
-   
-            if exportedSessionKey is not None: 
+
+            if exportedSessionKey is not None:
                 self._Session['SessionKey']  = exportedSessionKey
                 if self._Session['SigningRequired'] is True and self._Connection['Dialect'] == SMB2_DIALECT_30:
                     self._Session['SigningKey']  = crypto.KDF_CounterMode(exportedSessionKey, b"SMB2AESCMAC\x00", b"SmbSign\x00", 128)
@@ -810,7 +832,7 @@ class SMB3:
                         self._Session['ApplicationKey']  = crypto.KDF_CounterMode(exportedSessionKey, b"SMB2APP\x00", b"SmbRpc\x00", 128)
                         self._Session['EncryptionKey']   = crypto.KDF_CounterMode(exportedSessionKey, b"SMB2AESCCM\x00",b"ServerIn \x00", 128)
                         self._Session['DecryptionKey']   = crypto.KDF_CounterMode(exportedSessionKey, b"SMB2AESCCM\x00",b"ServerOut\x00", 128)
- 
+
                     return True
             except:
                 # We clean the stuff we used in case we want to authenticate again
@@ -826,7 +848,7 @@ class SMB3:
 
     def connectTree(self, share):
 
-        # Just in case this came with the full path (maybe an SMB1 client), let's just leave 
+        # Just in case this came with the full path (maybe an SMB1 client), let's just leave
         # the sharename, we'll take care of the rest
 
         #print self._Session['TreeConnectTable']
@@ -849,7 +871,7 @@ class SMB3:
         treeConnect = SMB2TreeConnect()
         treeConnect['Buffer']     = path.encode('utf-16le')
         treeConnect['PathLength'] = len(path)*2
-         
+
         packet = self.SMB_PACKET()
         packet['Command'] = SMB2_TREE_CONNECT
         packet['Data'] = treeConnect
@@ -880,7 +902,7 @@ class SMB3:
            self._Session['TreeConnectTable'][packet['TreeID']] = treeEntry
            self._Session['TreeConnectTable'][share]            = treeEntry
 
-           return packet['TreeID'] 
+           return packet['TreeID']
 
     def disconnectTree(self, treeId):
         if (treeId in self._Session['TreeConnectTable']) is False:
@@ -931,7 +953,7 @@ class SMB3:
         fileEntry = copy.deepcopy(FILE)
         fileEntry['LeaseKey']   = uuid.generate()
         fileEntry['LeaseState'] = SMB2_LEASE_NONE
-        self.GlobalFileTable[pathName] = fileEntry 
+        self.GlobalFileTable[pathName] = fileEntry
 
         if self._Connection['Dialect'] == SMB2_DIALECT_30 and self._Connection['SupportsDirectoryLeasing'] is True:
            # Is this file NOT on the root directory?
@@ -942,9 +964,9 @@ class SMB3:
            else:
                parentEntry = copy.deepcopy(FILE)
                parentEntry['LeaseKey']   = uuid.generate()
-               parentEntry['LeaseState'] = SMB2_LEASE_NONE 
-               self.GlobalFileTable[parentDir] = parentEntry 
-               
+               parentEntry['LeaseState'] = SMB2_LEASE_NONE
+               self.GlobalFileTable[parentDir] = parentEntry
+
         packet = self.SMB_PACKET()
         packet['Command'] = SMB2_CREATE
         packet['TreeID']  = treeId
@@ -960,17 +982,24 @@ class SMB3:
         smb2Create['ShareAccess']          = shareMode
         smb2Create['CreateDisposition']    = creationDisposition
         smb2Create['CreateOptions']        = creationOptions
-       
+
         smb2Create['NameLength']           = len(fileName)*2
         if fileName != '':
-            smb2Create['Buffer']               = fileName.encode('utf-16le')
+            smb2Create['Buffer']           = fileName.encode('utf-16le')
         else:
-            smb2Create['Buffer']               = '\x00'
+            smb2Create['Buffer']           = b'\x00'
 
         if createContexts is not None:
-            smb2Create['Buffer'] += createContexts
-            smb2Create['CreateContextsOffset'] = len(SMB2Packet()) + SMB2Create.SIZE + smb2Create['NameLength']
-            smb2Create['CreateContextsLength'] = len(createContexts)
+            contextsBuf = b''.join(x.getData() for x in createContexts)
+            smb2Create['CreateContextsOffset'] = len(SMB2Packet()) + SMB2Create.SIZE + len(smb2Create['Buffer'])
+
+            # pad offset to 8-byte align
+            if (smb2Create['CreateContextsOffset'] % 8):
+                smb2Create['Buffer'] += b'\x00'*(8-(smb2Create['CreateContextsOffset'] % 8))
+                smb2Create['CreateContextsOffset'] = len(SMB2Packet()) + SMB2Create.SIZE + len(smb2Create['Buffer'])
+
+            smb2Create['CreateContextsLength'] = len(contextsBuf)
+            smb2Create['Buffer'] += contextsBuf
         else:
             smb2Create['CreateContextsOffset'] = 0
             smb2Create['CreateContextsLength'] = 0
@@ -999,10 +1028,10 @@ class SMB3:
                 openFile['FileAttributes']    = oplockLevel
                 openFile['CreateDisposition'] = oplockLevel
 
-            # ToDo: Process the contexts            
+            # ToDo: Process the contexts
             self._Session['OpenTable'][createResponse['FileID'].getData()] = openFile
 
-            # The client MUST generate a handle for the Open, and it MUST 
+            # The client MUST generate a handle for the Open, and it MUST
             # return success and the generated handle to the calling application.
             # In our case, str(FileID)
             return createResponse['FileID'].getData()
@@ -1020,7 +1049,7 @@ class SMB3:
         smbClose = SMB2Close()
         smbClose['Flags']  = 0
         smbClose['FileID'] = fileId
-        
+
         packet['Data'] = smbClose
 
         packetID = self.sendSMB(packet)
@@ -1029,7 +1058,7 @@ class SMB3:
         if ans.isValidAnswer(STATUS_SUCCESS):
             del(self.GlobalFileTable[self._Session['OpenTable'][fileId]['FileName']])
             del(self._Session['OpenTable'][fileId])
-             
+
             # ToDo Remove stuff from GlobalFileTable
             return True
 
@@ -1050,12 +1079,12 @@ class SMB3:
 
         if self._Connection['MaxReadSize'] < bytesToRead:
             maxBytesToRead = self._Connection['MaxReadSize']
-        else: 
+        else:
             maxBytesToRead = bytesToRead
 
         if self._Connection['Dialect'] != SMB2_DIALECT_002 and self._Connection['SupportsMultiCredit'] is True:
             packet['CreditCharge'] = ( 1 + (maxBytesToRead - 1) // 65536)
-        else: 
+        else:
             maxBytesToRead = min(65536,bytesToRead)
 
         smbRead = SMB2Read()
@@ -1074,7 +1103,7 @@ class SMB3:
             if readResponse['DataRemaining'] > 0:
                 retData += self.read(treeId, fileId, offset+len(retData), readResponse['DataRemaining'], waitAnswer)
             return retData
-       
+
     def write(self, treeId, fileId, data, offset = 0, bytesToWrite = 0, waitAnswer = True):
         # IMPORTANT NOTE: As you can see, this was coded as a recursive function
         # Hence, you can exhaust the memory pretty easy ( large bytesToWrite )
@@ -1092,12 +1121,12 @@ class SMB3:
 
         if self._Connection['MaxWriteSize'] < bytesToWrite:
             maxBytesToWrite = self._Connection['MaxWriteSize']
-        else: 
+        else:
             maxBytesToWrite = bytesToWrite
 
         if self._Connection['Dialect'] != SMB2_DIALECT_002 and self._Connection['SupportsMultiCredit'] is True:
             packet['CreditCharge'] = ( 1 + (maxBytesToWrite - 1) // 65536)
-        else: 
+        else:
             maxBytesToWrite = min(65536,bytesToWrite)
 
         smbWrite = SMB2Write()
@@ -1186,7 +1215,7 @@ class SMB3:
         packet = self.SMB_PACKET()
         packet['Command']            = SMB2_IOCTL
         packet['TreeID']             = treeId
-       
+
         smbIoctl = SMB2Ioctl()
         smbIoctl['FileID']             = fileId
         smbIoctl['CtlCode']            = ctlCode
@@ -1203,7 +1232,7 @@ class SMB3:
         smbIoctl['Flags']              = flags
 
         packet['Data'] = smbIoctl
- 
+
         packetID = self.sendSMB(packet)
 
         if waitAnswer == 0:
@@ -1310,8 +1339,8 @@ class SMB3:
 
         queryInfo = SMB2QueryInfo()
         queryInfo['FileID']                = fileId
-        queryInfo['InfoType']              = SMB2_0_INFO_FILE 
-        queryInfo['FileInfoClass']         = fileInfoClass 
+        queryInfo['InfoType']              = infoType
+        queryInfo['FileInfoClass']         = fileInfoClass
         queryInfo['OutputBufferLength']    = 65535
         queryInfo['AdditionalInformation'] = additionalInformation
         if len(inputBlob) == 0:
@@ -1341,8 +1370,8 @@ class SMB3:
         packet['TreeID']  = treeId
 
         setInfo = SMB2SetInfo()
-        setInfo['InfoType']              = SMB2_0_INFO_FILE 
-        setInfo['FileInfoClass']         = fileInfoClass 
+        setInfo['InfoType']              = infoType
+        setInfo['FileInfoClass']         = fileInfoClass
         setInfo['BufferLength']          = len(inputBlob)
         setInfo['AdditionalInformation'] = additionalInformation
         setInfo['FileID']                = fileId
@@ -1356,7 +1385,7 @@ class SMB3:
             return True
 
     def getSessionKey(self):
-        if self.getDialect() == SMB2_DIALECT_30: 
+        if self.getDialect() == SMB2_DIALECT_30:
            return self._Session['ApplicationKey']
         else:
            return self._Session['SessionKey']
@@ -1384,7 +1413,7 @@ class SMB3:
         treeId = self.connectTree(shareName)
         fileId = None
         try:
-            fileId = self.create(treeId, oldPath, MAXIMUM_ALLOWED ,FILE_SHARE_READ | FILE_SHARE_WRITE |FILE_SHARE_DELETE, 0x200020, FILE_OPEN, 0) 
+            fileId = self.create(treeId, oldPath, MAXIMUM_ALLOWED ,FILE_SHARE_READ | FILE_SHARE_WRITE |FILE_SHARE_DELETE, 0x200020, FILE_OPEN, 0)
             renameReq = FILE_RENAME_INFORMATION_TYPE_2()
             renameReq['ReplaceIfExists'] = 1
             renameReq['RootDirectory']   = '\x00'*8
@@ -1394,7 +1423,7 @@ class SMB3:
         finally:
             if fileId is not None:
                 self.close(treeId, fileId)
-            self.disconnectTree(treeId) 
+            self.disconnectTree(treeId)
 
         return True
 
@@ -1410,7 +1439,45 @@ class SMB3:
             writeOffset += written
         return writeOffset - offset
 
+    def isSnapshotRequest(self, path):
+        #TODO: use a regex here?
+        return '@GMT-' in path
+
+    def timestampForSnapshot(self, path):
+        timestamp = path[path.index("@GMT-"):path.index("@GMT-")+24]
+        path = path.replace(timestamp, '')
+        from datetime import datetime
+        fTime = int((datetime.strptime(timestamp, '@GMT-%Y.%m.%d-%H.%M.%S') - datetime(1970,1,1)).total_seconds())
+        fTime *= 10000000
+        fTime += 116444736000000000
+
+        token = SMB2_CREATE_TIMEWARP_TOKEN()
+        token['Timestamp'] = fTime
+
+        ctx = SMB2CreateContext()
+        ctx['Next'] = 0
+        ctx['NameOffset'] = 16
+        ctx['NameLength'] = len('TWrp')
+        ctx['DataOffset'] = 24
+        ctx['DataLength'] = 8
+        ctx['Buffer'] = b'TWrp'
+        ctx['Buffer'] += b'\x00'*4 # 4 bytes to 8-byte align
+        ctx['Buffer'] += token.getData()
+
+        # fix-up the path
+        path = path.replace(timestamp, '').replace('\\\\', '\\')
+        if path == '\\':
+            path += '*'
+        return path, ctx
+
     def listPath(self, shareName, path, password = None):
+        createContexts = None
+
+        if self.isSnapshotRequest(path):
+            createContexts = []
+            path, ctx = self.timestampForSnapshot(path)
+            createContexts.append(ctx)
+
         # ToDo: Handle situations where share is password protected
         path = path.replace('/', '\\')
         path = ntpath.normpath(path)
@@ -1424,7 +1491,8 @@ class SMB3:
             # ToDo, we're assuming it's a directory, we should check what the file type is
             fileId = self.create(treeId, ntpath.dirname(path), FILE_READ_ATTRIBUTES | FILE_READ_DATA, FILE_SHARE_READ |
                                  FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                                 FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, FILE_OPEN, 0)
+                                 FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, FILE_OPEN, 0,
+                                 createContexts=createContexts)
             res = ''
             files = []
             from impacket import smb
@@ -1453,7 +1521,7 @@ class SMB3:
         finally:
             if fileId is not None:
                 self.close(treeId, fileId)
-            self.disconnectTree(treeId) 
+            self.disconnectTree(treeId)
 
         return files
 
@@ -1472,8 +1540,8 @@ class SMB3:
                                  FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, FILE_CREATE, 0)
         finally:
             if fileId is not None:
-                self.close(treeId, fileId)            
-            self.disconnectTree(treeId) 
+                self.close(treeId, fileId)
+            self.disconnectTree(treeId)
 
         return True
 
@@ -1499,7 +1567,7 @@ class SMB3:
         finally:
             if fileId is not None:
                 self.close(treeId, fileId)
-            self.disconnectTree(treeId) 
+            self.disconnectTree(treeId)
 
         return True
 
@@ -1518,11 +1586,18 @@ class SMB3:
         finally:
             if fileId is not None:
                 self.close(treeId, fileId)
-            self.disconnectTree(treeId) 
+            self.disconnectTree(treeId)
 
         return True
 
     def retrieveFile(self, shareName, path, callback, mode = FILE_OPEN, offset = 0, password = None, shareAccessMode = FILE_SHARE_READ):
+        createContexts = None
+
+        if self.isSnapshotRequest(path):
+            createContexts = []
+            path, ctx = self.timestampForSnapshot(path)
+            createContexts.append(ctx)
+
         # ToDo: Handle situations where share is password protected
         path = path.replace('/', '\\')
         path = ntpath.normpath(path)
@@ -1533,12 +1608,12 @@ class SMB3:
         fileId = None
         from impacket import smb
         try:
-            fileId = self.create(treeId, path, FILE_READ_DATA, shareAccessMode, FILE_NON_DIRECTORY_FILE, mode, 0)
+            fileId = self.create(treeId, path, FILE_READ_DATA, shareAccessMode, FILE_NON_DIRECTORY_FILE, mode, 0, createContexts=createContexts)
             res = self.queryInfo(treeId, fileId)
             fileInfo = smb.SMBQueryFileStandardInfo(res)
             fileSize = fileInfo['EndOfFile']
             if (fileSize-offset) < self._Connection['MaxReadSize']:
-                # Skip reading 0 bytes files. 
+                # Skip reading 0 bytes files.
                 if (fileSize-offset) > 0:
                     data = self.read(treeId, fileId, offset, fileSize-offset)
                     callback(data)
@@ -1553,7 +1628,7 @@ class SMB3:
         finally:
             if fileId is not None:
                 self.close(treeId, fileId)
-            self.disconnectTree(treeId) 
+            self.disconnectTree(treeId)
 
     def storeFile(self, shareName, path, callback, mode = FILE_OVERWRITE_IF, offset = 0, password = None, shareAccessMode = FILE_SHARE_WRITE):
         # ToDo: Handle situations where share is password protected
@@ -1593,14 +1668,14 @@ class SMB3:
         pipeWait['Name']             = pipename.encode('utf-16le')
 
         return self.ioctl(treeId, None, FSCTL_PIPE_WAIT,flags=SMB2_0_IOCTL_IS_FSCTL, inputBlob=pipeWait, maxInputResponse = 0, maxOutputResponse=0)
-        
+
     def getIOCapabilities(self):
         res = dict()
 
         res['MaxReadSize'] = self._Connection['MaxReadSize']
         res['MaxWriteSize'] = self._Connection['MaxWriteSize']
         return res
-        
+
 
     ######################################################################
     # Backward compatibility functions and alias for SMB1 and DCE Transports
@@ -1610,6 +1685,7 @@ class SMB3:
     get_client_name            = getClientName
     get_server_domain          = getServerDomain
     get_server_dns_domain_name = getServerDNSDomainName
+    get_server_dns_host_name   = getServerDNSHostName
     get_remote_name            = getRemoteName
     set_remote_name            = setRemoteName
     get_remote_host            = getServerIP
@@ -1620,7 +1696,7 @@ class SMB3:
     tree_connect_andx          = connectTree
     tree_connect               = connectTree
     connect_tree               = connectTree
-    disconnect_tree            = disconnectTree 
+    disconnect_tree            = disconnectTree
     set_timeout                = setTimeout
     use_timeout                = useTimeout
     stor_file                  = storeFile
@@ -1633,11 +1709,11 @@ class SMB3:
             self._NetBIOSSession = None
 
     def doesSupportNTLMv2(self):
-        # Always true :P 
+        # Always true :P
         return True
-    
+
     def is_login_required(self):
-        # Always true :P 
+        # Always true :P
         return True
 
     def is_signing_required(self):
@@ -1646,7 +1722,7 @@ class SMB3:
     def nt_create_andx(self, treeId, fileName, smb_packet=None, cmd = None):
         if len(fileName) > 0 and fileName[0] == '\\':
             fileName = fileName[1:]
- 
+
         if cmd is not None:
             from impacket import smb
             ntCreate = smb.SMBCommand(data = cmd.getData())
@@ -1654,13 +1730,13 @@ class SMB3:
             return self.create(treeId, fileName, params['AccessMask'], params['ShareAccess'],
                                params['CreateOptions'], params['Disposition'], params['FileAttributes'],
                                params['Impersonation'], params['SecurityFlags'])
-                               
+
         else:
-            return self.create(treeId, fileName, 
+            return self.create(treeId, fileName,
                     FILE_READ_DATA | FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_READ_EA |
                     FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES | FILE_READ_ATTRIBUTES | READ_CONTROL,
                     FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_NON_DIRECTORY_FILE, FILE_OPEN, 0 )
-                    
+
     def get_socket(self):
         return self._NetBIOSSession.get_socket()
 
@@ -1697,3 +1773,22 @@ class SMB3:
 
         fileId = self.create(tid,fileName,desired_access, open_mode, FILE_NON_DIRECTORY_FILE, open_mode, 0)
         return fileId, 0, 0, 0, 0, 0, 0, 0, 0
+
+    def set_session_key(self, signingKey):
+        self._Session['SessionKey'] = signingKey
+        self._Session['SigningActivated'] = True
+        self._Session['SigningRequired'] = True
+
+    def set_hostname_validation(self, validate, accept_empty, hostname):
+        self._strict_hostname_validation = validate
+        self._validation_allow_absent = accept_empty
+        self._accepted_hostname = hostname
+
+    def perform_hostname_validation(self):
+        if self._Session['ServerName'] == '':
+            if not self._validation_allow_absent:
+                raise self.HostnameValidationException('Hostname was not supplied by target host and absent validation is disallowed')
+            return
+        if self._Session['ServerName'].lower() != self._accepted_hostname.lower() and self._Session['ServerDNSHostName'].lower() != self._accepted_hostname.lower():
+            raise self.HostnameValidationException('Supplied hostname %s does not match reported hostnames %s or %s' %
+                (self._accepted_hostname.lower(), self._Session['ServerName'].lower(), self._Session['ServerDNSHostName'].lower()))
