@@ -2424,7 +2424,7 @@ class SMBCommands:
                 authenticateMessage['host_name'].decode('utf-16le')))
                 # Do we have credentials to check?
                 if len(smbServer.getCredentials()) > 0:
-                    identity = authenticateMessage['user_name'].decode('utf-16le')
+                    identity = authenticateMessage['user_name'].decode('utf-16le').lower()
                     # Do we have this user's credentials?
                     if identity in smbServer.getCredentials():
                         # Process data:
@@ -2461,7 +2461,7 @@ class SMBCommands:
                                                             authenticateMessage['domain_name'],
                                                             authenticateMessage['lanman'], authenticateMessage['ntlm'])
                         smbServer.log(ntlm_hash_data['hash_string'])
-                        if jtr_dump_path is not '':
+                        if jtr_dump_path != '':
                             writeJohnOutputToFile(ntlm_hash_data['hash_string'], ntlm_hash_data['hash_version'], jtr_dump_path)
                     except:
                         smbServer.log("Could not write NTLM Hashes to the specified JTR_Dump_Path %s" % jtr_dump_path)
@@ -2497,7 +2497,7 @@ class SMBCommands:
                 jtr_dump_path = smbServer.getJTRdumpPath()
                 ntlm_hash_data = outputToJohnFormat( b'', sessionSetupData['Account'], sessionSetupData['PrimaryDomain'], sessionSetupData['AnsiPwd'], sessionSetupData['UnicodePwd'] )
                 smbServer.log(ntlm_hash_data['hash_string'])
-                if jtr_dump_path is not '':
+                if jtr_dump_path != '':
                     writeJohnOutputToFile(ntlm_hash_data['hash_string'], ntlm_hash_data['hash_version'], jtr_dump_path)
             except:
                 smbServer.log("Could not write NTLM Hashes to the specified JTR_Dump_Path %s" % jtr_dump_path)
@@ -2801,7 +2801,7 @@ class SMB2Commands:
             # Do we have credentials to check?
             if len(smbServer.getCredentials()) > 0:
                 isGuest = False
-                identity = authenticateMessage['user_name'].decode('utf-16le')
+                identity = authenticateMessage['user_name'].decode('utf-16le').lower()
                 # Do we have this user's credentials?
                 if identity in smbServer.getCredentials():
                     # Process data:
@@ -2839,7 +2839,7 @@ class SMB2Commands:
                                                         authenticateMessage['domain_name'],
                                                         authenticateMessage['lanman'], authenticateMessage['ntlm'])
                     smbServer.log(ntlm_hash_data['hash_string'])
-                    if jtr_dump_path is not '':
+                    if jtr_dump_path != '':
                         writeJohnOutputToFile(ntlm_hash_data['hash_string'], ntlm_hash_data['hash_version'],
                                               jtr_dump_path)
                 except:
@@ -4413,12 +4413,12 @@ smb.SMB.TRANS_TRANSACT_NMPIPE          :self.__smbTransHandler.transactNamedPipe
 
         # Process the credentials
         credentials_fname = self.__serverConfig.get('global','credentials_file')
-        if credentials_fname is not "":
+        if credentials_fname != "":
             cred = open(credentials_fname)
             line = cred.readline()
             while line:
                 name, uid, lmhash, nthash = line.split(':')
-                self.__credentials[name] = (uid, lmhash, nthash.strip('\r\n'))
+                self.__credentials[name.lower()] = (uid, lmhash, nthash.strip('\r\n'))
                 line = cred.readline()
             cred.close()
         self.log('Config file parsed')
@@ -4435,7 +4435,7 @@ smb.SMB.TRANS_TRANSACT_NMPIPE          :self.__smbTransHandler.transactNamedPipe
                 nthash = a2b_hex(nthash)
             except:
                 pass
-        self.__credentials[name] = (uid, lmhash, nthash)
+        self.__credentials[name.lower()] = (uid, lmhash, nthash)
 
 # For windows platforms, opening a directory is not an option, so we set a void FD
 VOID_FILE_DESCRIPTOR = -1

@@ -332,10 +332,10 @@ class ADDCOMPUTER:
 
                 # retrieve user information from CCache file if needed
                 if user == '' and creds is not None:
-                    user = creds['client'].prettyPrint().split(b'@')[0]
+                    user = creds['client'].prettyPrint().split(b'@')[0].decode('utf-8')
                     logging.debug('Username retrieved from CCache: %s' % user)
                 elif user == '' and len(ccache.principal.components) > 0:
-                    user = ccache.principal.components[0]['data']
+                    user = ccache.principal.components[0]['data'].decode('utf-8')
                     logging.debug('Username retrieved from CCache: %s' % user)
 
         # First of all, we need to get a TGT for the user
@@ -618,7 +618,7 @@ if __name__ == '__main__':
         logging.getLogger().setLevel(logging.INFO)
 
     import re
-    domain, username, password = re.compile('(?:(?:([^/:]*)/)?([^:]*)(?::([^@]*))?)?').match(options.account).groups(
+    domain, username, password = re.compile('(?:(?:([^/:]*)/)?([^:]*)(?::(.*))?)?').match(options.account).groups(
         '')
 
     try:

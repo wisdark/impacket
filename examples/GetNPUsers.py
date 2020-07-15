@@ -211,9 +211,8 @@ class GetUserNoPreAuth:
             self.request_users_file_TGTs()
             return
 
-
         # Are we asked not to supply a password?
-        if self.__no_pass is True:
+        if self.__doKerberos is False and self.__no_pass is True:
             # Yes, just ask the TGT and exit
             logging.info('Getting TGT for %s' % self.__username)
             entry = self.getTGT(self.__username)
@@ -404,15 +403,7 @@ if __name__ == '__main__':
         logging.getLogger().setLevel(logging.INFO)
 
     import re
-    # This is because I'm lazy with regex
-    # ToDo: We need to change the regex to fullfil domain/username[:password]
-    targetParam = options.target+'@'
-    domain, username, password, address = re.compile('(?:(?:([^/@:]*)/)?([^@:]*)(?::([^@]*))?@)?(.*)').match(targetParam).groups('')
-
-    #In case the password contains '@'
-    if '@' in address:
-        password = password + '@' + address.rpartition('@')[0]
-        address = address.rpartition('@')[2]
+    domain, username, password = re.compile('(?:(?:([^/:]*)/)?([^:]*)(?::(.*))?)?').match(options.target).groups('')
 
     if domain == '':
         logging.critical('Domain should be specified!')
@@ -424,6 +415,10 @@ if __name__ == '__main__':
 
     if options.aesKey is not None:
         options.k = True
+
+    if options.k is False and options.no_pass is True and username == '' and options.usersfile is None:
+        logging.critical('If the -no-pass option was specified, but Kerberos (-k) is not used, then a username or the -usersfile option should be specified!')
+        sys.exit(1)
 
     if options.outputfile is not None:
         options.request = True

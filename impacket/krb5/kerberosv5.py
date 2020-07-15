@@ -331,9 +331,7 @@ def getKerberosTGT(clientName, password, domain, lmhash, nthash, aesKey='', kdcH
     encASRepPart = decoder.decode(plainText, asn1Spec = EncASRepPart())[0]
 
     # Get the session key and the ticket
-    # We're assuming the cipher for this session key is the same
-    # as the one we used before.
-    # ToDo: change this
+    cipher = _enctype_table[encASRepPart['key']['keytype']]
     sessionKey = Key(cipher.enctype,encASRepPart['key']['keyvalue'].asOctets())
 
     # ToDo: Check Nonces!
@@ -557,10 +555,10 @@ def getKerberosType1(username, password, domain, lmhash, nthash, aesKey='', TGT 
 
                 # retrieve user information from CCache file if needed
                 if username == '' and creds is not None:
-                    username = creds['client'].prettyPrint().split(b'@')[0]
+                    username = creds['client'].prettyPrint().split(b'@')[0].decode('utf-8')
                     LOG.debug('Username retrieved from CCache: %s' % username)
                 elif username == '' and len(ccache.principal.components) > 0:
-                    username = ccache.principal.components[0]['data']
+                    username = ccache.principal.components[0]['data'].decode('utf-8')
                     LOG.debug('Username retrieved from CCache: %s' % username)
 
     # First of all, we need to get a TGT for the user

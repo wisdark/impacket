@@ -1213,6 +1213,10 @@ class SAMHashes(OfflineRegistry):
 
             userName = V[userAccount['NameOffset']:userAccount['NameOffset']+userAccount['NameLength']].decode('utf-16le')
 
+            if userAccount['NTHashLength'] == 0:
+                logging.error('SAM hashes extraction for user %s failed. The account doesn\'t have hash information.' % userName)
+                continue
+
             encNTHash = b''
             if V[userAccount['NTHashOffset']:][2:3] == b'\x01':
                 # Old Style hashes
@@ -1296,7 +1300,7 @@ class LSASecrets(OfflineRegistry):
 
     def __decryptSecret(self, key, value):
         # [MS-LSAD] Section 5.1.2
-        plainText = ''
+        plainText = b''
 
         encryptedSecretSize = unpack('<I', value[:4])[0]
         value = value[len(value)-encryptedSecretSize:]
@@ -1793,7 +1797,7 @@ class NTDSHashes:
             ('Header','8s=b""'),
             ('KeyMaterial','16s=b""'),
             ('Unknown','<L=0'),
-            ('EncryptedHash','32s=b""'),
+            ('EncryptedHash', ':'),
         )
 
     class CRYPTED_HISTORY(Structure):
@@ -2139,6 +2143,8 @@ class NTDSHashes:
 
                     if encryptedNTHistory['Header'][:4] == b'\x13\x00\x00\x00':
                         # Win2016 TP4 decryption is different
+                        encryptedNTHistory = self.CRYPTED_HASHW16(
+                            unhexlify(record[self.NAME_TO_INTERNAL['ntPwdHistory']]))
                         pekIndex = hexlify(encryptedNTHistory['Header'])
                         tmpNTHistory = self.__cryptoCommon.decryptAES(self.__PEK[int(pekIndex[8:10])],
                                                                       encryptedNTHistory['EncryptedHash'],
