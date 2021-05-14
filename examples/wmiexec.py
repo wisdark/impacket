@@ -27,11 +27,13 @@ import argparse
 import time
 import logging
 import ntpath
+from base64 import b64encode
 
 from impacket.examples import logger
+from impacket.examples.utils import parse_target
 from impacket import version
 from impacket.smbconnection import SMBConnection, SMB_DIALECT, SMB2_DIALECT_002, SMB2_DIALECT_21
-from impacket.dcerpc.v5.dcomrt import DCOMConnection
+from impacket.dcerpc.v5.dcomrt import DCOMConnection, COMVERSION
 from impacket.dcerpc.v5.dcom import wmi
 from impacket.dcerpc.v5.dtypes import NULL
 from impacket.krb5.keytab import Keytab
@@ -42,7 +44,7 @@ CODEC = sys.stdout.encoding
 
 class WMIEXEC:
     def __init__(self, command='', username='', password='', domain='', hashes=None, aesKey=None, share=None,
-                 noOutput=False, doKerberos=False, kdcHost=None):
+                 noOutput=False, doKerberos=False, kdcHost=None, shell_type=None):
         self.__command = command
         self.__username = username
         self.__password = password
@@ -54,6 +56,7 @@ class WMIEXEC:
         self.__noOutput = noOutput
         self.__doKerberos = doKerberos
         self.__kdcHost = kdcHost
+        self.__shell_type = shell_type
         self.shell = None
         if hashes is not None:
             self.__lmhash, self.__nthash = hashes.split(':')
@@ -89,7 +92,7 @@ class WMIEXEC:
 
             win32Process,_ = iWbemServices.GetObject('Win32_Process')
 
-            self.shell = RemoteShell(self.__share, win32Process, smbConnection)
+            self.shell = RemoteShell(self.__share, win32Process, smbConnection, self.__shell_type)
             if self.__command != ' ':
                 self.shell.onecmd(self.__command)
             else:
@@ -110,12 +113,14 @@ class WMIEXEC:
         dcom.disconnect()
 
 class RemoteShell(cmd.Cmd):
-    def __init__(self, share, win32Process, smbConnection):
+    def __init__(self, share, win32Process, smbConnection, shell_type):
         cmd.Cmd.__init__(self)
         self.__share = share
         self.__output = '\\' + OUTPUT_FILENAME
         self.__outputBuffer = str('')
         self.__shell = 'cmd.exe /Q /c '
+        self.__shell_type = shell_type
+        self.__pwsh = 'powershell.exe -NoP -NoL -sta -NonI -W Hidden -Exec Bypass -Enc '
         self.__win32Process = win32Process
         self.__transferClient = smbConnection
         self.__pwd = str('C:\\')
@@ -136,8 +141,8 @@ class RemoteShell(cmd.Cmd):
         print("""
  lcd {path}                 - changes the current local directory to {path}
  exit                       - terminates the server process (and this session)
- put {src_file, dst_path}   - uploads a local file to the dst_path (dst_path = default current directory)
- get {file}                 - downloads pathname to the current local dir 
+ lput {src_file, dst_path}   - uploads a local file to the dst_path (dst_path = default current directory)
+ lget {file}                 - downloads pathname to the current local dir
  ! {cmd}                    - executes a local shell cmd
 """) 
 
@@ -150,7 +155,7 @@ class RemoteShell(cmd.Cmd):
             except Exception as e:
                 logging.error(str(e))
 
-    def do_get(self, src_path):
+    def do_lget(self, src_path):
 
         try:
             import ntpath
@@ -168,9 +173,7 @@ class RemoteShell(cmd.Cmd):
             if os.path.exists(filename):
                 os.remove(filename)
 
-
-
-    def do_put(self, s):
+    def do_lput(self, s):
         try:
             params = s.split(' ')
             if len(params) > 1:
@@ -196,6 +199,10 @@ class RemoteShell(cmd.Cmd):
     def do_exit(self, s):
         return True
 
+    def do_EOF(self, s):
+        print()
+        return self.do_exit(s)
+
     def emptyline(self):
         return False
 
@@ -212,6 +219,8 @@ class RemoteShell(cmd.Cmd):
             self.execute_remote('cd ')
             self.__pwd = self.__outputBuffer.strip('\r\n')
             self.prompt = (self.__pwd + '>')
+            if self.__shell_type == 'powershell':
+                self.prompt = 'PS ' + self.prompt + ' '
             self.__outputBuffer = ''
 
     def default(self, line):
@@ -229,6 +238,8 @@ class RemoteShell(cmd.Cmd):
                 self.execute_remote('cd ')
                 self.__pwd = self.__outputBuffer.strip('\r\n')
                 self.prompt = (self.__pwd + '>')
+                if self.__shell_type == 'powershell':
+                    self.prompt = 'PS ' + self.prompt + ' '
                 self.__outputBuffer = ''
         else:
             if line != '':
@@ -264,8 +275,13 @@ class RemoteShell(cmd.Cmd):
                     return self.get_output()
         self.__transferClient.deleteFile(self.__share, self.__output)
 
-    def execute_remote(self, data):
-        command = self.__shell + data 
+    def execute_remote(self, data, shell_type='cmd'):
+        if shell_type == 'powershell':
+            data = '$ProgressPreference="SilentlyContinue";' + data
+            data = self.__pwsh + b64encode(data.encode('utf-16le')).decode()
+
+        command = self.__shell + data
+
         if self.__noOutput is False:
             command += ' 1> ' + '\\\\127.0.0.1\\%s' % self.__share + self.__output  + ' 2>&1'
         if PY2:
@@ -275,7 +291,7 @@ class RemoteShell(cmd.Cmd):
         self.get_output()
 
     def send_data(self, data):
-        self.execute_remote(data)
+        self.execute_remote(data, self.__shell_type)
         print(self.__outputBuffer)
         self.__outputBuffer = ''
 
@@ -346,6 +362,10 @@ if __name__ == '__main__':
                                                        'map the result with '
                           'https://docs.python.org/3/library/codecs.html#standard-encodings and then execute wmiexec.py '
                           'again with -codec and the corresponding codec ' % CODEC)
+    parser.add_argument('-shell-type', action='store', default = 'cmd', choices = ['cmd', 'powershell'], help='choose '
+                        'a command processor for the semi-interactive shell')
+    parser.add_argument('-com-version', action='store', metavar = "MAJOR_VERSION:MINOR_VERSION", help='DCOM version, '
+                        'format is MAJOR_VERSION:MINOR_VERSION e.g. 5.7')
 
     parser.add_argument('command', nargs='*', default = ' ', help='command to execute at the target. If empty it will '
                                                                   'launch a semi-interactive shell')
@@ -391,15 +411,15 @@ if __name__ == '__main__':
     else:
         logging.getLogger().setLevel(logging.INFO)
 
-    import re
+    if options.com_version is not None:
+        try:
+            major_version, minor_version = options.com_version.split('.')
+            COMVERSION.set_default_version(int(major_version), int(minor_version))
+        except Exception:
+            logging.error("Wrong COMVERSION format, use dot separated integers e.g. \"5.7\"")
+            sys.exit(1)
 
-    domain, username, password, address = re.compile('(?:(?:([^/@:]*)/)?([^@:]*)(?::([^@]*))?@)?(.*)').match(
-        options.target).groups('')
-
-    #In case the password contains '@'
-    if '@' in address:
-        password = password + '@' + address.rpartition('@')[0]
-        address = address.rpartition('@')[2]
+    domain, username, password, address = parse_target(options.target)
 
     try:
         if options.A is not None:
@@ -421,7 +441,7 @@ if __name__ == '__main__':
             options.k = True
 
         executer = WMIEXEC(' '.join(options.command), username, password, domain, options.hashes, options.aesKey,
-                           options.share, options.nooutput, options.k, options.dc_ip)
+                           options.share, options.nooutput, options.k, options.dc_ip, options.shell_type)
         executer.run(address)
     except KeyboardInterrupt as e:
         logging.error(str(e))
