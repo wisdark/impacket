@@ -1,22 +1,28 @@
 #!/usr/bin/env python
-# SECUREAUTH LABS. Copyright 2019 SecureAuth Corporation. All rights reserved.
+# Impacket - Collection of Python classes for working with network protocols.
 #
-# This software is provided under under a slightly modified version
+# SECUREAUTH LABS. Copyright (C) 2021 SecureAuth Corporation. All rights reserved.
+#
+# This software is provided under a slightly modified version
 # of the Apache Software License. See the accompanying LICENSE file
 # for more information.
 #
-# Author:
-#  JaGoTu (@jagotu)
-#
 # Description:
-#     This script will add a computer account to the domain and set its password.
-#     Allows to use SAMR over SMB (this way is used by modern Windows computer when
-#     adding machines through the GUI) and LDAPS.
-#     Plain LDAP is not supported, as it doesn't allow setting the password.
+#   This script will add a computer account to the domain and set its password.
+#   Allows to use SAMR over SMB (this way is used by modern Windows computer when
+#   adding machines through the GUI) and LDAPS.
+#   Plain LDAP is not supported, as it doesn't allow setting the password.
+#
+# Author:
+#   JaGoTu (@jagotu)
 #
 # Reference for:
-#     SMB, SAMR, LDAP
+#   SMB, SAMR, LDAP
 #
+# ToDo:
+#   [ ]: Complete the process of joining a client computer to a domain via the SAMR protocol
+#
+
 from __future__ import division
 from __future__ import print_function
 from __future__ import unicode_literals
@@ -528,6 +534,14 @@ class ADDCOMPUTER:
                 if self.__noAdd:
                     logging.info("Successfully set password of %s to %s." % (self.__computerName, self.__computerPassword))
                 else:
+                    checkForUser = samr.hSamrLookupNamesInDomain(dce, domainHandle, [self.__computerName])
+                    userRID = checkForUser['RelativeIds']['Element'][0]
+                    openUser = samr.hSamrOpenUser(dce, domainHandle, samr.MAXIMUM_ALLOWED, userRID)
+                    userHandle = openUser['UserHandle']
+                    req = samr.SAMPR_USER_INFO_BUFFER()
+                    req['tag'] = samr.USER_INFORMATION_CLASS.UserControlInformation
+                    req['Control']['UserAccountControl'] = samr.USER_WORKSTATION_TRUST_ACCOUNT
+                    samr.hSamrSetInformationUser2(dce, userHandle, req)
                     logging.info("Successfully added machine account %s with password %s." % (self.__computerName, self.__computerPassword))
 
         except Exception as e:
