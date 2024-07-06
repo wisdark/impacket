@@ -1,6 +1,6 @@
 # Impacket - Collection of Python classes for working with network protocols.
 #
-# Copyright (C) 2022 Fortra. All rights reserved.
+# Copyright (C) 2023 Fortra. All rights reserved.
 #
 # This software is provided under a slightly modified version
 # of the Apache Software License. See the accompanying LICENSE file
@@ -200,8 +200,11 @@ NETWORK_MANAGER_LAST_IP_ADDRESS_REMOVAL_GUID    = 'cc4ba62a-162e-4648-847a-b6bdf
 USER_POLICY_PRESENT_GUID                        = '54FB46C8-F089-464C-B1FD-59D1B62C3B50'
 
 # SERVICE_TRIGGER_SPECIFIC_DATA_ITEM dataTypes
-SERVICE_TRIGGER_DATA_TYPE_BINARY = 0x00000001
-SERVICE_TRIGGER_DATA_TYPE_STRING = 0x00000002
+SERVICE_TRIGGER_DATA_TYPE_BINARY      = 0x00000001
+SERVICE_TRIGGER_DATA_TYPE_STRING      = 0x00000002
+SERVICE_TRIGGER_DATA_TYPE_LEVEL       = 0x00000003
+SERVICE_TRIGGER_DATA_TYPE_KEYWORD_ANY = 0x00000004
+SERVICE_TRIGGER_DATA_TYPE_KEYWORD_ALL = 0x00000005
 
 ################################################################################
 # STRUCTURES
